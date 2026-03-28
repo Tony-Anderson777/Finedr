@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Smart File Manager",
+  "productName": "Finedr",
   "version": "1.0.0",
   "identifier": "com.smartfilemanager.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Smart File Manager",
+        "title": "Finedr",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -35,7 +35,13 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "icon": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon_512.png",
+      "icons/icon.ico"
+    ],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
