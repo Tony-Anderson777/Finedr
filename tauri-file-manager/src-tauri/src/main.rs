@@ -740,6 +740,180 @@ async fn open_file_with_default_app(path: String) -> Result<(), String> {
     open::that(&file_path).map_err(|e| format!("Cannot open file: {}", e))
 }
 
+// ============ AI MODULE (MCP-style, metadata-only) ============
+
+const AI_SYSTEM_PROMPT: &str = "\
+Tu es un assistant d'organisation de fichiers intégré à Finedr. \
+Tu as accès UNIQUEMENT aux noms, extensions, tailles et dates de modification des fichiers — jamais à leur contenu. \
+Analyse les patterns, suggère des améliorations d'organisation, détecte les anomalies et réponds aux questions de l'utilisateur. \
+Réponds en français, de façon concise et actionnable (max 400 mots). \
+Ne mentionne jamais que tu n'as pas accès au contenu — c'est voulu et ne l'explique pas.";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileMetaForAi {
+    pub name: String,
+    pub ext: Option<String>,
+    pub size_kb: f64,
+    pub is_folder: bool,
+    pub modified: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AiAnalysisRequest {
+    pub path: String,
+    pub provider: String,       // "claude" | "ollama"
+    pub api_key: Option<String>,
+    pub model: String,          // "claude-haiku-4-5-20251001" or "llama3.2" etc.
+    pub question: Option<String>,
+}
+
+fn collect_metadata_for_ai(path: &Path) -> Result<Vec<FileMetaForAi>, String> {
+    let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
+    let mut files: Vec<FileMetaForAi> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') { return None; } // skip hidden
+            let meta = e.metadata().ok()?;
+            let is_folder = meta.is_dir();
+            let size_kb = if is_folder { 0.0 } else { meta.len() as f64 / 1024.0 };
+            let modified = meta.modified().ok()
+                .map(|t| {
+                    let dt: DateTime<Utc> = t.into();
+                    dt.format("%Y-%m-%d").to_string()
+                })
+                .unwrap_or_default();
+            let ext = if is_folder { None } else {
+                Path::new(&name).extension()
+                    .map(|e| e.to_string_lossy().to_lowercase().to_string())
+            };
+            Some(FileMetaForAi { name, ext, size_kb, is_folder, modified })
+        })
+        .collect();
+
+    files.sort_by(|a, b| b.is_folder.cmp(&a.is_folder).then(a.name.cmp(&b.name)));
+    files.truncate(150); // cap prompt size
+    Ok(files)
+}
+
+fn build_ai_prompt(files: &[FileMetaForAi], path: &str, question: &Option<String>) -> String {
+    let mut lines = vec![
+        format!("Répertoire : {}", path),
+        format!("Éléments analysés : {}", files.len()),
+        String::new(),
+        "Contenu (métadonnées uniquement) :".to_string(),
+    ];
+    for f in files {
+        let icon = if f.is_folder { "📁" } else { "📄" };
+        let ext = f.ext.as_deref().map(|e| format!(".{}", e)).unwrap_or_default();
+        let size = if f.is_folder { String::new() } else if f.size_kb >= 1024.0 {
+            format!("  {:.1} Mo", f.size_kb / 1024.0)
+        } else {
+            format!("  {:.0} Ko", f.size_kb)
+        };
+        lines.push(format!("{} {}{}{} [{}]", icon, f.name, ext, size, f.modified));
+    }
+    lines.push(String::new());
+    match question.as_deref() {
+        Some(q) if !q.trim().is_empty() => lines.push(format!("Question : {}", q)),
+        _ => {
+            lines.push("Analyse ce répertoire et fournis :".to_string());
+            lines.push("1. Patterns observés (types de fichiers, dates, conventions de nommage)".to_string());
+            lines.push("2. Suggestions d'organisation concrètes".to_string());
+            lines.push("3. Anomalies éventuelles (doublons probables, très gros fichiers, nommage incohérent)".to_string());
+        }
+    }
+    lines.join("\n")
+}
+
+async fn call_claude(prompt: &str, api_key: &str, model: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 1024,
+        "system": AI_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}]
+    });
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send().await
+        .map_err(|e| format!("Erreur réseau Claude : {}", e))?;
+
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        let msg = if code == 401 { "Clé API invalide ou expirée".to_string() }
+                  else { format!("Erreur Claude {} : {}", code, text) };
+        return Err(msg);
+    }
+    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    data["content"][0]["text"].as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Réponse Claude invalide".to_string())
+}
+
+async fn call_ollama(prompt: &str, model: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build().map_err(|e| e.to_string())?;
+    let full_prompt = format!("{}\n\n{}", AI_SYSTEM_PROMPT, prompt);
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": full_prompt,
+        "stream": false
+    });
+    let resp = client
+        .post("http://localhost:11434/api/generate")
+        .json(&body)
+        .send().await
+        .map_err(|e| format!("Ollama inaccessible : {}", e))?;
+
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        return Err(format!("Erreur Ollama {} — modèle '{}' introuvable ?", code, model));
+    }
+    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    data["response"].as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Réponse Ollama invalide".to_string())
+}
+
+#[tauri::command]
+async fn check_ollama() -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build() else { return false; };
+    client.get("http://localhost:11434/api/tags")
+        .send().await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn ai_analyze(request: AiAnalysisRequest) -> Result<String, String> {
+    let path = PathBuf::from(&request.path);
+    if !path.is_dir() {
+        return Err(format!("Chemin invalide ou inaccessible : {}", request.path));
+    }
+    let files = collect_metadata_for_ai(&path)?;
+    let prompt = build_ai_prompt(&files, &request.path, &request.question);
+
+    match request.provider.as_str() {
+        "claude" => {
+            let key = request.api_key.as_deref()
+                .filter(|k| !k.trim().is_empty())
+                .ok_or("Clé API Claude manquante — configure-la dans Préférences > IA")?;
+            call_claude(&prompt, key, &request.model).await
+        }
+        "ollama" => call_ollama(&prompt, &request.model).await,
+        other => Err(format!("Fournisseur inconnu : {}", other)),
+    }
+}
+
 // ============ MAIN ============
 
 fn main() {
@@ -763,6 +937,8 @@ fn main() {
             get_disk_spaces,
             analyze_directory_categories,
             open_file_with_default_app,
+            check_ollama,
+            ai_analyze,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

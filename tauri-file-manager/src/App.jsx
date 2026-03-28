@@ -14,7 +14,8 @@ import {
   Search, Settings, Star, Trash2, HardDrive, Network, Monitor,
   LayoutGrid, List, Columns, GalleryHorizontal,
   Sun, Moon, Plus, X, RefreshCw,
-  Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud
+  Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud,
+  Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -137,6 +138,10 @@ const ThemeProvider = ({ children }) => {
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#007AFF');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showFileSizes, setShowFileSizes] = useState(() => localStorage.getItem('showFileSizes') !== 'false');
+  const [aiPanelOpen, setAiPanelOpen]   = useState(false);
+  const [aiProvider,  setAiProvider]    = useState(() => localStorage.getItem('aiProvider')  || 'claude');
+  const [claudeKey,   setClaudeKey]     = useState(() => localStorage.getItem('claudeKey')   || '');
+  const [ollamaModel, setOllamaModel]   = useState(() => localStorage.getItem('ollamaModel') || 'llama3.2');
 
   // Apply theme class
   useEffect(() => {
@@ -165,9 +170,10 @@ const ThemeProvider = ({ children }) => {
     localStorage.setItem('accentColor', accentColor);
   }, [accentColor]);
 
-  useEffect(() => {
-    localStorage.setItem('showFileSizes', showFileSizes);
-  }, [showFileSizes]);
+  useEffect(() => { localStorage.setItem('showFileSizes', showFileSizes); }, [showFileSizes]);
+  useEffect(() => { localStorage.setItem('aiProvider',   aiProvider);   }, [aiProvider]);
+  useEffect(() => { localStorage.setItem('claudeKey',    claudeKey);    }, [claudeKey]);
+  useEffect(() => { localStorage.setItem('ollamaModel',  ollamaModel);  }, [ollamaModel]);
 
   return (
     <ThemeContext.Provider value={{
@@ -176,6 +182,10 @@ const ThemeProvider = ({ children }) => {
       accentColor, setAccentColor,
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
+      aiPanelOpen, setAiPanelOpen,
+      aiProvider, setAiProvider,
+      claudeKey, setClaudeKey,
+      ollamaModel, setOllamaModel,
     }}>
       {children}
     </ThemeContext.Provider>
@@ -732,7 +742,7 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading } = useFileManager();
-  const { setSettingsOpen } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen } = useTheme();
   
   const handleSearchChange = (e) => {
     const value = e.target.value;
@@ -803,6 +813,15 @@ const TopBar = () => {
           <RefreshCw size={14} strokeWidth={1.5} className={loading ? 'animate-spin' : ''} />
         </button>
         
+        <button
+          className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
+          title="Assistant IA"
+          onClick={() => setAiPanelOpen(true)}
+        >
+          <Sparkles size={14} strokeWidth={1.5} />
+          <span className="text-[12px] font-medium hidden sm:inline">IA</span>
+        </button>
+
         <button
           className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
           title="Préférences"
@@ -1320,7 +1339,12 @@ const SettingsPanel = () => {
     accentColor, setAccentColor,
     settingsOpen, setSettingsOpen,
     showFileSizes, setShowFileSizes,
+    aiProvider, setAiProvider,
+    claudeKey, setClaudeKey,
+    ollamaModel, setOllamaModel,
   } = useTheme();
+  const [showKey, setShowKey] = useState(false);
+  const [ollamaStatus, setOllamaStatus] = useState(null); // null | true | false
 
   const [diskSpaces, setDiskSpaces] = useState([]);
   const [analyzePath, setAnalyzePath] = useState('');
@@ -1495,6 +1519,72 @@ const SettingsPanel = () => {
             </div>
           </section>
 
+          {/* IA */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+              <Sparkles size={11} /> Assistant IA
+            </h3>
+
+            {/* Provider */}
+            <div className="grid grid-cols-3 gap-1.5 mb-3">
+              {[['claude','Claude API'],['ollama','Ollama'],['both','Les deux']].map(([v,l]) => (
+                <button key={v} onClick={() => setAiProvider(v)}
+                  className={cn('py-1.5 rounded-lg text-[11px] font-medium border transition-all',
+                    aiProvider === v ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/40 text-foreground/70'
+                  )}>{l}</button>
+              ))}
+            </div>
+
+            {/* Claude key */}
+            {(aiProvider === 'claude' || aiProvider === 'both') && (
+              <div className="mb-3">
+                <label className="text-[11px] text-muted-foreground mb-1 block">Clé API Anthropic</label>
+                <div className="relative">
+                  <input
+                    type={showKey ? 'text' : 'password'}
+                    value={claudeKey}
+                    onChange={e => setClaudeKey(e.target.value)}
+                    placeholder="sk-ant-api03-..."
+                    className="w-full h-8 px-3 pr-8 text-[11px] bg-secondary/50 border border-input rounded-md focus:outline-none focus:border-primary font-mono"
+                  />
+                  <button onClick={() => setShowKey(s => !s)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Stockée localement, jamais transmise hors API Anthropic.
+                </p>
+              </div>
+            )}
+
+            {/* Ollama */}
+            {(aiProvider === 'ollama' || aiProvider === 'both') && (
+              <div className="mb-3">
+                <label className="text-[11px] text-muted-foreground mb-1 block">Modèle Ollama</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={ollamaModel}
+                    onChange={e => setOllamaModel(e.target.value)}
+                    placeholder="llama3.2"
+                    className="flex-1 h-8 px-3 text-[11px] bg-secondary/50 border border-input rounded-md focus:outline-none focus:border-primary font-mono"
+                  />
+                  <button
+                    onClick={async () => {
+                      setOllamaStatus(null);
+                      const ok = await invoke('check_ollama').catch(() => false);
+                      setOllamaStatus(ok);
+                    }}
+                    className="px-3 h-8 rounded-md bg-secondary border border-border text-[11px] hover:bg-secondary/80 transition-colors flex-shrink-0"
+                  >Tester</button>
+                </div>
+                {ollamaStatus === true  && <p className="text-[10px] text-green-500 mt-1 flex items-center gap-1"><CheckCircle2 size={10}/> Ollama détecté sur localhost:11434</p>}
+                {ollamaStatus === false && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={10}/> Ollama inaccessible — lance-le avec <code className="font-mono">ollama serve</code></p>}
+              </div>
+            )}
+          </section>
+
           {/* Analyse par catégorie */}
           <section>
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Analyse par catégorie</h3>
@@ -1540,6 +1630,191 @@ const SettingsPanel = () => {
   );
 };
 
+// ============ AI PANEL ============
+
+const AiPanel = () => {
+  const { aiPanelOpen, setAiPanelOpen, aiProvider, claudeKey, ollamaModel } = useTheme();
+  const { currentPath } = useFileManager();
+
+  const [activeProvider, setActiveProvider] = useState('claude');
+  const [question, setQuestion] = useState('');
+  const [result, setResult] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // When panel opens, default to the configured provider
+  useEffect(() => {
+    if (aiPanelOpen) {
+      setActiveProvider(aiProvider === 'both' ? 'claude' : aiProvider);
+      setResult('');
+      setError('');
+    }
+  }, [aiPanelOpen, aiProvider]);
+
+  const analyze = async (provider) => {
+    setLoading(true);
+    setResult('');
+    setError('');
+    try {
+      const text = await invoke('ai_analyze', {
+        request: {
+          path: currentPath,
+          provider,
+          api_key: provider === 'claude' ? claudeKey : null,
+          model: provider === 'claude' ? 'claude-haiku-4-5-20251001' : ollamaModel,
+          question: question.trim() || null,
+        }
+      });
+      setResult(text);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!aiPanelOpen) return null;
+
+  const canUseClaude = aiProvider === 'claude' || aiProvider === 'both';
+  const canUseOllama = aiProvider === 'ollama' || aiProvider === 'both';
+  const showProviderToggle = aiProvider === 'both';
+
+  // Simple line-by-line renderer (bold **text**, bullets)
+  const renderResult = (text) =>
+    text.split('\n').map((line, i) => {
+      const bold = line.replace(/\*\*(.*?)\*\*/g, (_, t) => `<strong>${t}</strong>`);
+      const isBullet = /^[-•*]\s/.test(line);
+      return (
+        <p key={i}
+          className={cn('leading-relaxed', isBullet && 'pl-3', !line && 'h-3')}
+          dangerouslySetInnerHTML={{ __html: isBullet ? bold.replace(/^[-•*]\s/, '• ') : bold }}
+        />
+      );
+    });
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" onClick={() => setAiPanelOpen(false)}>
+      <div
+        className="settings-panel w-[380px] h-full flex flex-col"
+        style={{ animationName: 'slideInFromRight' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="relative z-10 flex items-center justify-between px-5 py-4 border-b border-white/20 dark:border-white/8">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center">
+              <Sparkles size={14} strokeWidth={1.5} className="text-primary" />
+            </div>
+            <div>
+              <span className="font-semibold text-[14px] block">Assistant IA</span>
+              <span className="text-[10px] text-muted-foreground">Métadonnées uniquement</span>
+            </div>
+          </div>
+          <button
+            onClick={() => setAiPanelOpen(false)}
+            className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="relative z-10 flex-1 flex flex-col px-5 py-4 gap-3 overflow-hidden">
+
+          {/* Current path */}
+          <div className="rounded-lg bg-secondary/60 px-3 py-2 border border-border">
+            <p className="text-[10px] text-muted-foreground mb-0.5">Dossier analysé</p>
+            <p className="text-[12px] font-mono truncate">{currentPath || '(racine)'}</p>
+          </div>
+
+          {/* Provider toggle (only when "both") */}
+          {showProviderToggle && (
+            <div className="grid grid-cols-2 gap-1.5">
+              {[['claude','Claude (Anthropic)'],['ollama',`Ollama (${ollamaModel})`]].map(([v,l]) => (
+                <button key={v} onClick={() => setActiveProvider(v)}
+                  className={cn('py-1.5 rounded-lg text-[11px] font-medium border transition-all',
+                    activeProvider === v
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border hover:border-primary/40 text-foreground/70'
+                  )}>{l}</button>
+              ))}
+            </div>
+          )}
+
+          {/* Question */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={question}
+              onChange={e => setQuestion(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !loading && analyze(activeProvider)}
+              placeholder="Question optionnelle... (Entrée pour analyser)"
+              className="flex-1 h-8 px-3 text-[12px] bg-secondary/50 border border-input rounded-md focus:outline-none focus:border-primary"
+            />
+            <button
+              onClick={() => analyze(activeProvider)}
+              disabled={loading || !currentPath}
+              className="px-3 h-8 rounded-md bg-primary text-primary-foreground text-[12px] font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors flex-shrink-0 flex items-center gap-1.5"
+            >
+              {loading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              {loading ? 'Analyse…' : 'Analyser'}
+            </button>
+          </div>
+
+          {/* Config warning */}
+          {!canUseClaude && !canUseOllama && (
+            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 px-3 py-2 text-[11px] text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
+              <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+              <span>Configure un fournisseur IA dans <button className="underline" onClick={() => { setAiPanelOpen(false); }}>Préférences</button>.</span>
+            </div>
+          )}
+          {canUseClaude && activeProvider === 'claude' && !claudeKey && (
+            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 px-3 py-2 text-[11px] text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
+              <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+              <span>Clé API Claude manquante — ajoute-la dans Préférences &gt; IA.</span>
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-[11px] text-red-600 dark:text-red-400 flex items-start gap-2">
+              <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+              <span className="break-words">{error}</span>
+            </div>
+          )}
+
+          {/* Result */}
+          {result && (
+            <div className="flex-1 overflow-y-auto rounded-lg bg-secondary/40 border border-border px-4 py-3 text-[12px] leading-relaxed space-y-0.5">
+              {renderResult(result)}
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!result && !error && !loading && (
+            <div className="flex-1 flex flex-col items-center justify-center text-center text-muted-foreground gap-3">
+              <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center">
+                <Bot size={28} strokeWidth={1} className="text-primary" />
+              </div>
+              <div>
+                <p className="text-[13px] font-medium">Analyse intelligente</p>
+                <p className="text-[11px] mt-1">Patterns, organisation, anomalies</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer disclaimer */}
+        <div className="relative z-10 px-5 py-3 border-t border-white/20 dark:border-white/8">
+          <p className="text-[10px] text-muted-foreground text-center">
+            L'IA accède uniquement aux noms et métadonnées — jamais au contenu des fichiers.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ MAIN APP ============
 
 const FileManagerApp = () => {
@@ -1553,6 +1828,7 @@ const FileManagerApp = () => {
       </main>
       <QuickLook />
       <SettingsPanel />
+      <AiPanel />
       <Toaster position="bottom-right" richColors />
     </div>
   );

@@ -24,6 +24,7 @@ mime_guess = "2"
 image = "0.25"
 open = "5.3.3"
 sysinfo = "0.33"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 [features]
 default = ["custom-protocol"]
