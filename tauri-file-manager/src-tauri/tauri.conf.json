@@ -25,19 +25,17 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost; connect-src ipc: http://ipc.localhost; font-src 'self' data:; frame-src 'self' asset: http://asset.localhost https://asset.localhost; object-src 'self' asset: http://asset.localhost https://asset.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "targets": ["nsis", "msi"],
+    "icon": [],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
@@ -46,19 +44,7 @@
   },
   "plugins": {
     "fs": {
-      "scope": {
-        "allow": ["**"],
-        "deny": []
-      }
-    },
-    "dialog": {
-      "all": true
-    },
-    "shell": {
-      "open": true
-    },
-    "os": {
-      "all": true
+      "requireLiteralLeadingDot": false
     }
   }
 }
