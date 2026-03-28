@@ -9,7 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
@@ -22,6 +22,8 @@ dirs = "5"
 walkdir = "2"
 mime_guess = "2"
 image = "0.25"
+open = "5.3.3"
+sysinfo = "0.33"
 
 [features]
 default = ["custom-protocol"]

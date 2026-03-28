@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use chrono::{DateTime, Utc};
+use sysinfo::Disks;
 
 // ============ TYPES ============
 
@@ -36,7 +37,6 @@ pub struct FileItem {
     pub id: String,
     pub name: String,
     pub path: String,
-    #[serde(rename = "type")]
     pub file_type: FileType,
     pub size: u64,
     pub extension: Option<String>,
@@ -53,7 +53,16 @@ pub struct DriveInfo {
     pub path: String,
     pub total_space: u64,
     pub free_space: u64,
+    pub used_space: u64,
     pub drive_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryUsage {
+    pub category: String,
+    pub size: u64,
+    pub count: u64,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,16 +125,11 @@ fn is_hidden(path: &Path) -> bool {
 }
 
 fn path_to_id(path: &Path) -> String {
-    // Use base64-like encoding of path as ID
-    base64_encode(path.to_string_lossy().as_ref())
-}
-
-fn base64_encode(input: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    input.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    // Encode the full path as hex — deterministic and collision-free
+    path.to_string_lossy()
+        .bytes()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 // ============ TAURI COMMANDS ============
@@ -342,7 +346,24 @@ async fn rename_file(path: String, new_name: String) -> Result<String, String> {
 #[tauri::command]
 async fn delete_file(path: String, permanent: bool) -> Result<(), String> {
     let file_path = PathBuf::from(&path);
-    
+
+    // Block deletion of drive roots (e.g. C:\, D:\)
+    #[cfg(windows)]
+    {
+        let p = path.trim_end_matches(['\\', '/']);
+        if p.len() <= 2 && p.ends_with(':') {
+            return Err("Cannot delete a drive root".to_string());
+        }
+    }
+    // Block deletion if the path has no parent (Unix root "/")
+    if file_path.parent().is_none() {
+        return Err("Cannot delete filesystem root".to_string());
+    }
+
+    if !file_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
     if permanent {
         // Permanent delete
         if file_path.is_dir() {
@@ -550,8 +571,173 @@ async fn get_user_directories() -> Result<Vec<FileItem>, String> {
 }
 
 #[tauri::command]
+async fn get_disk_spaces() -> Result<Vec<DriveInfo>, String> {
+    let disks = Disks::new_with_refreshed_list();
+    let mut result: Vec<DriveInfo> = Vec::new();
+
+    for disk in disks.list() {
+        let mount = disk.mount_point();
+        let total = disk.total_space();
+        let free = disk.available_space();
+        let used = total.saturating_sub(free);
+        let name = disk.name().to_string_lossy().to_string();
+        let path = mount.to_string_lossy().to_string();
+
+        result.push(DriveInfo {
+            name: if name.is_empty() { format!("Disque ({})", &path) } else { name },
+            path,
+            total_space: total,
+            free_space: free,
+            used_space: used,
+            drive_type: format!("{:?}", disk.kind()),
+        });
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn analyze_directory_categories(path: String) -> Result<Vec<CategoryUsage>, String> {
+    use std::collections::HashMap;
+
+    let scan_path = PathBuf::from(&path);
+    if !scan_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    // category name → (size, count, color)
+    let mut categories: HashMap<&str, (u64, u64, &str)> = HashMap::from([
+        ("Images",   (0, 0, "#FF9500")),
+        ("Vidéos",   (0, 0, "#AF52DE")),
+        ("Audio",    (0, 0, "#FF2D55")),
+        ("Documents",(0, 0, "#007AFF")),
+        ("Code",     (0, 0, "#32ADE6")),
+        ("Archives", (0, 0, "#8E8E93")),
+        ("Autres",   (0, 0, "#34C759")),
+    ]);
+
+    for entry in walkdir::WalkDir::new(&scan_path)
+        .max_depth(6)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let ext = entry.path().extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let cat = match ext.as_str() {
+            "jpg"|"jpeg"|"png"|"gif"|"webp"|"svg"|"bmp"|"heic"|"tiff"|"ico" => "Images",
+            "mp4"|"mov"|"avi"|"mkv"|"webm"|"flv"|"wmv"|"m4v" => "Vidéos",
+            "mp3"|"wav"|"flac"|"aac"|"ogg"|"m4a"|"wma" => "Audio",
+            "pdf"|"doc"|"docx"|"xls"|"xlsx"|"ppt"|"pptx"|"txt"|"rtf"|"odt"|"md"|"csv" => "Documents",
+            "js"|"jsx"|"ts"|"tsx"|"py"|"rs"|"java"|"cpp"|"c"|"h"|"css"|"html"|"json"|"xml"|"sql"|"sh"|"bat" => "Code",
+            "zip"|"rar"|"7z"|"tar"|"gz"|"bz2" => "Archives",
+            _ => "Autres",
+        };
+
+        if let Some(entry_mut) = categories.get_mut(cat) {
+            entry_mut.0 += size;
+            entry_mut.1 += 1;
+        }
+    }
+
+    let mut result: Vec<CategoryUsage> = categories
+        .into_iter()
+        .filter(|(_, (size, _, _))| *size > 0)
+        .map(|(name, (size, count, color))| CategoryUsage {
+            category: name.to_string(),
+            size,
+            count,
+            color: color.to_string(),
+        })
+        .collect();
+
+    result.sort_by(|a, b| b.size.cmp(&a.size));
+    Ok(result)
+}
+
+#[tauri::command]
+async fn get_onedrive_directories() -> Result<Vec<FileItem>, String> {
+    let mut dirs: Vec<FileItem> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Check all known OneDrive environment variables
+    let candidates = [
+        std::env::var("OneDriveConsumer").ok(),
+        std::env::var("OneDrive").ok(),
+        std::env::var("OneDriveCommercial").ok(),
+    ];
+
+    // Also try the default path as fallback
+    let fallback = dirs::home_dir().map(|h| h.join("OneDrive").to_string_lossy().to_string());
+
+    for path_str in candidates.into_iter().flatten().chain(fallback) {
+        if seen.contains(&path_str) {
+            continue;
+        }
+        seen.insert(path_str.clone());
+
+        let root = PathBuf::from(&path_str);
+        if !root.exists() {
+            continue;
+        }
+
+        let meta = fs::metadata(&root).ok();
+        dirs.push(FileItem {
+            id: path_to_id(&root),
+            name: "OneDrive".to_string(),
+            path: root.to_string_lossy().to_string(),
+            file_type: FileType::Folder,
+            size: 0,
+            extension: None,
+            is_hidden: false,
+            created_at: meta.as_ref().and_then(|m| m.created().ok()).map(system_time_to_string).unwrap_or_default(),
+            modified_at: meta.as_ref().and_then(|m| m.modified().ok()).map(system_time_to_string).unwrap_or_default(),
+            is_favorite: true,
+            thumbnail_url: None,
+        });
+
+        // Add common OneDrive sub-folders if they exist
+        for (label, sub) in [("Documents", "Documents"), ("Images", "Pictures"), ("Bureau", "Desktop")] {
+            let sub_path = root.join(sub);
+            if sub_path.exists() {
+                let sub_meta = fs::metadata(&sub_path).ok();
+                dirs.push(FileItem {
+                    id: path_to_id(&sub_path),
+                    name: label.to_string(),
+                    path: sub_path.to_string_lossy().to_string(),
+                    file_type: FileType::Folder,
+                    size: 0,
+                    extension: None,
+                    is_hidden: false,
+                    created_at: sub_meta.as_ref().and_then(|m| m.created().ok()).map(system_time_to_string).unwrap_or_default(),
+                    modified_at: sub_meta.as_ref().and_then(|m| m.modified().ok()).map(system_time_to_string).unwrap_or_default(),
+                    is_favorite: true,
+                    thumbnail_url: None,
+                });
+            }
+        }
+    }
+
+    Ok(dirs)
+}
+
+#[tauri::command]
 async fn open_file_with_default_app(path: String) -> Result<(), String> {
-    open::that(&path).map_err(|e| format!("Cannot open file: {}", e))
+    let file_path = PathBuf::from(&path);
+
+    // Reject anything that isn't an existing file or directory on disk
+    if !file_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+    if !file_path.is_file() && !file_path.is_dir() {
+        return Err("Invalid path: must be a file or directory".to_string());
+    }
+
+    open::that(&file_path).map_err(|e| format!("Cannot open file: {}", e))
 }
 
 // ============ MAIN ============
@@ -573,6 +759,9 @@ fn main() {
             get_file_content,
             search_files,
             get_user_directories,
+            get_onedrive_directories,
+            get_disk_spaces,
+            analyze_directory_categories,
             open_file_with_default_app,
         ])
         .run(tauri::generate_context!())

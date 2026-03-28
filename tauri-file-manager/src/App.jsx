@@ -2,7 +2,7 @@
 // Accès au vrai système de fichiers Windows
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { Toaster, toast } from 'sonner';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -14,7 +14,7 @@ import {
   Search, Settings, Star, Trash2, HardDrive, Network, Monitor,
   LayoutGrid, List, Columns, GalleryHorizontal,
   Sun, Moon, Plus, X, RefreshCw,
-  Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen
+  Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -90,6 +90,38 @@ const useFileManager = () => {
   return context;
 };
 
+// ============ HELPERS ============
+
+function hexToHslString(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
+}
+
+const ACCENT_PRESETS = [
+  { label: 'Bleu Apple',  hex: '#007AFF' },
+  { label: 'Violet',      hex: '#AF52DE' },
+  { label: 'Rose',        hex: '#FF2D55' },
+  { label: 'Orange',      hex: '#FF9500' },
+  { label: 'Vert',        hex: '#34C759' },
+  { label: 'Cyan',        hex: '#32ADE6' },
+  { label: 'Rouge',       hex: '#FF3B30' },
+  { label: 'Jaune',       hex: '#FFCC00' },
+];
+
 // ============ THEME ============
 
 const ThemeContext = createContext(null);
@@ -100,26 +132,51 @@ const useTheme = () => {
 };
 
 const ThemeProvider = ({ children }) => {
-  const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem('theme');
-    return saved || 'system';
-  });
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system');
+  const [visualStyle, setVisualStyle] = useState(() => localStorage.getItem('visualStyle') || 'default');
+  const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#007AFF');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showFileSizes, setShowFileSizes] = useState(() => localStorage.getItem('showFileSizes') !== 'false');
 
+  // Apply theme class
   useEffect(() => {
     const root = document.documentElement;
     root.classList.remove('light', 'dark');
-
-    if (theme === 'system') {
-      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      root.classList.add(systemTheme);
-    } else {
-      root.classList.add(theme);
-    }
+    const resolved = theme === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : theme;
+    root.classList.add(resolved);
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  // Apply visual style attribute
+  useEffect(() => {
+    document.documentElement.setAttribute('data-style', visualStyle);
+    localStorage.setItem('visualStyle', visualStyle);
+  }, [visualStyle]);
+
+  // Apply accent color
+  useEffect(() => {
+    const hsl = hexToHslString(accentColor);
+    const root = document.documentElement;
+    root.style.setProperty('--primary', hsl);
+    root.style.setProperty('--accent', hsl);
+    root.style.setProperty('--ring', hsl);
+    localStorage.setItem('accentColor', accentColor);
+  }, [accentColor]);
+
+  useEffect(() => {
+    localStorage.setItem('showFileSizes', showFileSizes);
+  }, [showFileSizes]);
+
   return (
-    <ThemeContext.Provider value={{ theme, setTheme }}>
+    <ThemeContext.Provider value={{
+      theme, setTheme,
+      visualStyle, setVisualStyle,
+      accentColor, setAccentColor,
+      settingsOpen, setSettingsOpen,
+      showFileSizes, setShowFileSizes,
+    }}>
       {children}
     </ThemeContext.Provider>
   );
@@ -134,6 +191,7 @@ const FileManagerProvider = ({ children }) => {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [view, setView] = useState('icons');
   const [userDirs, setUserDirs] = useState([]);
+  const [onedriveDirs, setOnedriveDirs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
@@ -170,7 +228,14 @@ const FileManagerProvider = ({ children }) => {
   const fetchUserDirs = useCallback(async () => {
     try {
       const result = await invoke('get_user_directories');
-      setUserDirs(result);
+      // Filter out dirs that live inside OneDrive — they'll appear in the OneDrive section
+      const onedrive = await invoke('get_onedrive_directories');
+      setOnedriveDirs(onedrive);
+      const onedrivePaths = onedrive.map(d => d.path.toLowerCase());
+      const localDirs = result.filter(d =>
+        !onedrivePaths.some(op => d.path.toLowerCase().startsWith(op))
+      );
+      setUserDirs(localDirs.length > 0 ? localDirs : result);
     } catch (error) {
       console.error('Error fetching user directories:', error);
     }
@@ -427,6 +492,7 @@ const FileManagerProvider = ({ children }) => {
     view,
     setView,
     userDirs,
+    onedriveDirs,
     loading,
     searchQuery,
     setSearchQuery,
@@ -453,7 +519,7 @@ const FileManagerProvider = ({ children }) => {
     displayedFiles, files, currentPath, breadcrumbs, selectedFiles, view, userDirs,
     loading, searchQuery, searchResults, quickLookFile, clipboard, navigationHistory, showHidden,
     navigateToFolder, goBack, goForward, openItem, search, deleteFile, createFolder,
-    renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles
+    renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs
   ]);
 
   return (
@@ -507,26 +573,47 @@ const SidebarItem = ({ icon: Icon, label, active, onClick, badge }) => (
 // ============ SIDEBAR ============
 
 const Sidebar = () => {
-  const { userDirs, navigateToFolder, currentPath } = useFileManager();
-  
+  const { userDirs, onedriveDirs, navigateToFolder, currentPath } = useFileManager();
+
   return (
-    <aside className="w-[220px] flex-shrink-0 h-full flex flex-col border-r border-border bg-[hsl(var(--sidebar-bg))]">
+    <aside className="glass-sidebar w-[220px] flex-shrink-0 h-full flex flex-col">
       <div className="flex-1 py-2 overflow-y-auto scrollbar-thin">
-        {/* Favoris / User Directories */}
-        <SidebarSection title="Favoris">
-          {userDirs.map((dir) => (
-            <SidebarItem
-              key={dir.path}
-              icon={Folder}
-              label={dir.name}
-              active={currentPath === dir.path}
-              onClick={() => navigateToFolder(dir.path)}
-            />
-          ))}
-        </SidebarSection>
-        
+
+        {/* Favoris — dossiers locaux */}
+        {userDirs.length > 0 && (
+          <SidebarSection title="Favoris">
+            {userDirs.map((dir) => (
+              <SidebarItem
+                key={dir.path}
+                icon={Folder}
+                label={dir.name}
+                active={currentPath === dir.path}
+                onClick={() => navigateToFolder(dir.path)}
+              />
+            ))}
+          </SidebarSection>
+        )}
+
+        {/* OneDrive */}
+        {onedriveDirs.length > 0 && (
+          <>
+            <div className="h-px bg-border mx-4 my-2" />
+            <SidebarSection title="OneDrive">
+              {onedriveDirs.map((dir) => (
+                <SidebarItem
+                  key={dir.path}
+                  icon={Cloud}
+                  label={dir.name}
+                  active={currentPath === dir.path}
+                  onClick={() => navigateToFolder(dir.path)}
+                />
+              ))}
+            </SidebarSection>
+          </>
+        )}
+
         <div className="h-px bg-border mx-4 my-2" />
-        
+
         {/* Ce PC */}
         <SidebarSection title="Ce PC">
           <SidebarItem
@@ -536,16 +623,16 @@ const Sidebar = () => {
             onClick={() => navigateToFolder('')}
           />
         </SidebarSection>
-        
+
         <div className="h-px bg-border mx-4 my-2" />
-        
+
         {/* Stockage */}
         <SidebarSection title="Stockage" defaultOpen={false}>
           <SidebarItem icon={HardDrive} label="Disques locaux" onClick={() => navigateToFolder('')} />
           <SidebarItem icon={Network} label="Réseau" onClick={() => {}} />
         </SidebarSection>
       </div>
-      
+
       {/* Corbeille */}
       <div className="border-t border-border p-2">
         <SidebarItem
@@ -645,6 +732,7 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading } = useFileManager();
+  const { setSettingsOpen } = useTheme();
   
   const handleSearchChange = (e) => {
     const value = e.target.value;
@@ -653,7 +741,7 @@ const TopBar = () => {
   };
   
   return (
-    <header className="h-[44px] flex-shrink-0 border-b border-border flex items-center justify-between px-3 gap-3 bg-[hsl(var(--topbar-bg))]">
+    <header className="glass-topbar h-[44px] flex-shrink-0 flex items-center justify-between px-3 gap-3">
       {/* Navigation */}
       <div className="flex items-center gap-1">
         <button
@@ -718,6 +806,7 @@ const TopBar = () => {
         <button
           className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
           title="Préférences"
+          onClick={() => setSettingsOpen(true)}
         >
           <Settings size={14} strokeWidth={1.5} />
         </button>
@@ -730,6 +819,7 @@ const TopBar = () => {
 
 const FileItemIcon = ({ file }) => {
   const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile } = useFileManager();
+  const { showFileSizes } = useTheme();
   const isSelected = selectedFiles.includes(file.path);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 });
@@ -787,6 +877,11 @@ const FileItemIcon = ({ file }) => {
         )}>
           {file.name}
         </span>
+        {showFileSizes && file.file_type !== 'folder' && file.size > 0 && (
+          <span className="text-[10px] text-muted-foreground mt-0.5">
+            {formatFileSize(file.size)}
+          </span>
+        )}
       </button>
       
       {/* Context Menu */}
@@ -843,10 +938,10 @@ const FileItemIcon = ({ file }) => {
 
 const IconsView = () => {
   const { files, setSelectedFiles } = useFileManager();
-  
+
   return (
-    <div 
-      className="p-4 grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1 content-start"
+    <div
+      className="h-full overflow-y-auto p-4 grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1 content-start"
       onClick={(e) => {
         if (e.target === e.currentTarget) setSelectedFiles([]);
       }}
@@ -1024,17 +1119,33 @@ const GalleryView = () => {
   return (
     <div className="flex h-full">
       {/* Main preview */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-secondary/20">
+      <div className="flex-1 flex items-center justify-center p-6 bg-secondary/20 overflow-hidden">
         {selectedFile ? (
-          <div className="text-center">
-            <div className="w-48 h-48 mx-auto mb-4 flex items-center justify-center">
-              {getFileIcon(selectedFile.file_type, selectedFile.extension, 128)}
+          selectedFile.file_type === 'image' ? (
+            <img
+              key={selectedFile.path}
+              src={convertFileSrc(selectedFile.path)}
+              alt={selectedFile.name}
+              className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+            />
+          ) : selectedFile.extension === 'pdf' ? (
+            <iframe
+              key={selectedFile.path}
+              src={convertFileSrc(selectedFile.path)}
+              className="w-full h-full rounded border-0"
+              title={selectedFile.name}
+            />
+          ) : (
+            <div className="text-center">
+              <div className="w-48 h-48 mx-auto mb-4 flex items-center justify-center">
+                {getFileIcon(selectedFile.file_type, selectedFile.extension, 128)}
+              </div>
+              <h3 className="text-lg font-medium">{selectedFile.name}</h3>
+              <p className="text-sm text-muted-foreground">
+                {getFileKind(selectedFile.file_type, selectedFile.extension)} • {formatFileSize(selectedFile.size)}
+              </p>
             </div>
-            <h3 className="text-lg font-medium">{selectedFile.name}</h3>
-            <p className="text-sm text-muted-foreground">
-              {getFileKind(selectedFile.file_type, selectedFile.extension)} • {formatFileSize(selectedFile.size)}
-            </p>
-          </div>
+          )
         ) : (
           <p className="text-muted-foreground">Aucun fichier sélectionné</p>
         )}
@@ -1109,7 +1220,7 @@ const ContentArea = () => {
   }
   
   return (
-    <div className="flex-1 overflow-hidden animate-fade-in">
+    <div className="glass-content flex-1 overflow-hidden animate-fade-in">
       <ViewComponent />
     </div>
   );
@@ -1163,18 +1274,266 @@ const QuickLook = () => {
           </button>
         </div>
         
-        <div className="p-8 flex flex-col items-center justify-center min-h-[300px]">
-          {getFileIcon(quickLookFile.file_type, quickLookFile.extension, 96)}
-          <p className="mt-4 text-lg font-medium">{quickLookFile.name}</p>
-          <p className="text-muted-foreground">{getFileKind(quickLookFile.file_type, quickLookFile.extension)}</p>
-          <p className="text-muted-foreground">{formatFileSize(quickLookFile.size)}</p>
-          <p className="text-sm text-muted-foreground mt-4">
-            Modifié le {formatDate(quickLookFile.modified_at)}
-          </p>
+        <div className="flex flex-col items-center justify-center" style={{ minHeight: 300, maxHeight: '70vh' }}>
+          {quickLookFile.file_type === 'image' ? (
+            <img
+              key={quickLookFile.path}
+              src={convertFileSrc(quickLookFile.path)}
+              alt={quickLookFile.name}
+              className="max-w-[700px] max-h-[60vh] object-contain rounded-lg"
+            />
+          ) : quickLookFile.extension === 'pdf' ? (
+            <iframe
+              key={quickLookFile.path}
+              src={convertFileSrc(quickLookFile.path)}
+              className="rounded border-0"
+              style={{ width: 700, height: 500 }}
+              title={quickLookFile.name}
+            />
+          ) : (
+            <div className="p-8 flex flex-col items-center">
+              {getFileIcon(quickLookFile.file_type, quickLookFile.extension, 96)}
+              <p className="mt-4 text-lg font-medium">{quickLookFile.name}</p>
+              <p className="text-muted-foreground">{getFileKind(quickLookFile.file_type, quickLookFile.extension)}</p>
+              <p className="text-muted-foreground">{formatFileSize(quickLookFile.size)}</p>
+              <p className="text-sm text-muted-foreground mt-4">
+                Modifié le {formatDate(quickLookFile.modified_at)}
+              </p>
+            </div>
+          )}
         </div>
         
         <div className="px-4 py-2 border-t border-border text-xs text-muted-foreground flex justify-between">
           <span>{quickLookFile.path}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============ SETTINGS PANEL ============
+
+const SettingsPanel = () => {
+  const {
+    theme, setTheme,
+    visualStyle, setVisualStyle,
+    accentColor, setAccentColor,
+    settingsOpen, setSettingsOpen,
+    showFileSizes, setShowFileSizes,
+  } = useTheme();
+
+  const [diskSpaces, setDiskSpaces] = useState([]);
+  const [analyzePath, setAnalyzePath] = useState('');
+  const [categories, setCategories] = useState([]);
+  const [analyzing, setAnalyzing] = useState(false);
+
+  useEffect(() => {
+    if (settingsOpen) {
+      invoke('get_disk_spaces').then(setDiskSpaces).catch(console.error);
+    }
+  }, [settingsOpen]);
+
+  const analyzeDir = async () => {
+    if (!analyzePath) return;
+    setAnalyzing(true);
+    try {
+      const result = await invoke('analyze_directory_categories', { path: analyzePath });
+      setCategories(result);
+    } catch (e) {
+      toast.error('Impossible d\'analyser ce dossier');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const totalAnalyzed = categories.reduce((s, c) => s + c.size, 0);
+
+  if (!settingsOpen) return null;
+
+  const STYLES = [
+    { value: 'default', label: 'Défaut',       desc: 'Interface standard',     cls: 'style-card-default' },
+    { value: 'frosted', label: 'Verre dépoli', desc: 'Fond flou léger',        cls: 'style-card-frosted' },
+    { value: 'liquid',  label: 'Liquid Glass', desc: 'Effet Apple translucide', cls: 'style-card-liquid'  },
+  ];
+
+  const THEMES = [
+    { value: 'light',  label: 'Clair'   },
+    { value: 'dark',   label: 'Sombre'  },
+    { value: 'system', label: 'Système' },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={() => setSettingsOpen(false)}>
+      <div
+        className="settings-panel w-[340px] h-full flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="relative z-10 flex items-center justify-between px-5 py-4 border-b border-white/20 dark:border-white/8">
+          <div className="flex items-center gap-2">
+            <Settings size={16} strokeWidth={1.5} className="text-primary" />
+            <span className="font-semibold text-[14px]">Préférences</span>
+          </div>
+          <button
+            onClick={() => setSettingsOpen(false)}
+            className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="relative z-10 flex-1 overflow-y-auto scrollbar-thin px-5 py-5 space-y-6">
+
+          {/* Apparence */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Apparence</h3>
+            <div className="grid grid-cols-3 gap-2">
+              {THEMES.map(t => (
+                <button
+                  key={t.value}
+                  onClick={() => setTheme(t.value)}
+                  className={cn(
+                    'py-2 rounded-lg text-[12px] font-medium border transition-all',
+                    theme === t.value
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border hover:border-primary/40 text-foreground/70'
+                  )}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* Effet visuel */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Effet visuel</h3>
+            <div className="space-y-2">
+              {STYLES.map(s => (
+                <button
+                  key={s.value}
+                  onClick={() => setVisualStyle(s.value)}
+                  className={cn('style-card w-full text-left', s.cls, visualStyle === s.value && 'active')}
+                >
+                  <div className={cn('style-card-preview', s.cls)} />
+                  <div className="font-medium text-[13px]">{s.label}</div>
+                  <div className="text-[11px] text-muted-foreground">{s.desc}</div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* Couleur d'accent */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Couleur d'accent</h3>
+            <div className="flex flex-wrap gap-2.5">
+              {ACCENT_PRESETS.map(c => (
+                <button
+                  key={c.hex}
+                  onClick={() => setAccentColor(c.hex)}
+                  title={c.label}
+                  className={cn(
+                    'w-8 h-8 rounded-full transition-all hover:scale-110 border-2',
+                    accentColor === c.hex
+                      ? 'border-white dark:border-white scale-110 shadow-lg'
+                      : 'border-transparent'
+                  )}
+                  style={{ backgroundColor: c.hex }}
+                />
+              ))}
+            </div>
+          </section>
+
+          {/* Affichage */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Affichage</h3>
+            <label className="flex items-center justify-between p-3 rounded-lg border border-border hover:border-primary/40 cursor-pointer transition-colors">
+              <div>
+                <div className="text-[13px] font-medium">Afficher le poids des fichiers</div>
+                <div className="text-[11px] text-muted-foreground">Visible en vue icônes et liste</div>
+              </div>
+              <div
+                onClick={() => setShowFileSizes(p => !p)}
+                className={cn(
+                  'relative w-10 h-6 rounded-full transition-colors cursor-pointer flex-shrink-0',
+                  showFileSizes ? 'bg-primary' : 'bg-border'
+                )}
+              >
+                <div className={cn(
+                  'absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                  showFileSizes ? 'translate-x-5' : 'translate-x-1'
+                )} />
+              </div>
+            </label>
+          </section>
+
+          {/* Espace disque */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Espace disque</h3>
+            <div className="space-y-3">
+              {diskSpaces.map(disk => {
+                const pct = disk.total_space > 0 ? (disk.used_space / disk.total_space) * 100 : 0;
+                const fillClass = pct > 90 ? 'crit' : pct > 75 ? 'warn' : '';
+                return (
+                  <div key={disk.path} className="space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-[12px] truncate">{disk.path}</span>
+                      <span className="text-[11px] text-muted-foreground ml-2 flex-shrink-0">
+                        {formatFileSize(disk.free_space)} libre / {formatFileSize(disk.total_space)}
+                      </span>
+                    </div>
+                    <div className="disk-bar-track">
+                      <div
+                        className={cn('disk-bar-fill', fillClass)}
+                        style={{ width: `${Math.min(pct, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Analyse par catégorie */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Analyse par catégorie</h3>
+            <div className="flex gap-2 mb-3">
+              <input
+                type="text"
+                value={analyzePath}
+                onChange={e => setAnalyzePath(e.target.value)}
+                placeholder="Ex: C:\Users\..."
+                className="flex-1 h-8 px-3 text-[12px] bg-secondary/50 border border-input rounded-md focus:outline-none focus:border-primary"
+              />
+              <button
+                onClick={analyzeDir}
+                disabled={analyzing || !analyzePath}
+                className="px-3 h-8 rounded-md bg-primary text-primary-foreground text-[12px] font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors flex-shrink-0"
+              >
+                {analyzing ? <RefreshCw size={12} className="animate-spin" /> : 'Analyser'}
+              </button>
+            </div>
+
+            {categories.length > 0 && (
+              <div className="space-y-2">
+                {categories.map(cat => {
+                  const pct = totalAnalyzed > 0 ? (cat.size / totalAnalyzed) * 100 : 0;
+                  return (
+                    <div key={cat.category} className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
+                      <span className="text-[12px] flex-1">{cat.category}</span>
+                      <span className="text-[11px] text-muted-foreground">{cat.count} fichier{cat.count > 1 ? 's' : ''}</span>
+                      <span className="text-[12px] font-medium w-16 text-right">{formatFileSize(cat.size)}</span>
+                      <div className="w-16 disk-bar-track">
+                        <div className="disk-bar-fill" style={{ width: `${pct}%`, backgroundColor: cat.color }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </div>
       </div>
     </div>
@@ -1193,6 +1552,7 @@ const FileManagerApp = () => {
         <StatusBar />
       </main>
       <QuickLook />
+      <SettingsPanel />
       <Toaster position="bottom-right" richColors />
     </div>
   );
