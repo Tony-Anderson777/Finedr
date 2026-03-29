@@ -2073,18 +2073,34 @@ const AiPanel = () => {
               {actionSummary && (
                 <p className="text-[11px] text-muted-foreground px-1 leading-relaxed">{actionSummary}</p>
               )}
-              {actions.length > 0 && (
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-muted-foreground">
-                    {actions.length} action{actions.length > 1 ? 's' : ''} · {done.size} exécutée{done.size > 1 ? 's' : ''}
-                  </span>
-                  <button onClick={executeAll}
-                    disabled={actions.every(a => done.has(a.id)) || executing.size > 0}
-                    className="text-[11px] px-3 py-1 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40">
-                    Tout exécuter
-                  </button>
-                </div>
-              )}
+              {actions.length > 0 && (() => {
+                const nFolders = actions.filter(a => a.action_type === 'create_folder').length;
+                const nMoves   = actions.filter(a => a.action_type === 'move_file').length;
+                const nOther   = actions.length - nFolders - nMoves;
+                const parts = [];
+                if (nFolders) parts.push(`${nFolders} dossier${nFolders > 1 ? 's' : ''} à créer`);
+                if (nMoves)   parts.push(`${nMoves} fichier${nMoves > 1 ? 's' : ''} à déplacer`);
+                if (nOther)   parts.push(`${nOther} autre${nOther > 1 ? 's' : ''}`);
+                return (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-muted-foreground">
+                        {parts.join(' · ')} · {done.size}/{actions.length} fait{done.size > 1 ? 's' : ''}
+                      </span>
+                      <button onClick={executeAll}
+                        disabled={actions.every(a => done.has(a.id)) || executing.size > 0}
+                        className="text-[11px] px-3 py-1 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40">
+                        Tout exécuter
+                      </button>
+                    </div>
+                    {nMoves === 0 && nFolders > 0 && (
+                      <p className="text-[10px] text-yellow-500 flex items-center gap-1">
+                        <AlertCircle size={10}/>Aucun déplacement proposé — essaie de re-générer le plan
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2 min-h-0">

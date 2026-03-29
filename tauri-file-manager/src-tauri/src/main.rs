@@ -905,24 +905,45 @@ pub struct AiActionPlan {
 }
 
 fn build_action_prompt(files: &[FileMetaForAi], base_path: &str) -> String {
+    // Normalize base_path to backslashes for Windows
+    let base = base_path.replace('/', "\\");
+
     let mut lines = vec![
-        format!("Répertoire : {}", base_path),
-        format!("Éléments : {}", files.len()),
+        format!("Répertoire racine (Windows) : {}", base),
+        format!("Nombre d'éléments : {}", files.len()),
         String::new(),
-        "Fichiers (métadonnées) :".to_string(),
+        "Liste des fichiers (métadonnées uniquement) :".to_string(),
     ];
-    for f in files.iter().take(80) {
+    for f in files.iter().take(100) {
         let icon = if f.is_folder { "📁" } else { "📄" };
         let ext  = f.ext.as_deref().map(|e| format!(".{}", e)).unwrap_or_default();
         let size = if !f.is_folder { format!(" {:.0}Ko", f.size_kb) } else { String::new() };
         lines.push(format!("{} {}{}{} [{}]", icon, f.name, ext, size, f.modified));
     }
     lines.push(String::new());
-    lines.push("Propose un plan d'organisation. Retourne UNIQUEMENT un objet JSON (pas de texte autour) :".to_string());
-    lines.push(r#"{"summary":"explication courte","actions":[{"type":"create_folder","target":"CHEMIN","reason":"raison"},{"type":"move_file","source":"SRC","target":"DST","reason":"raison"}]}"#.to_string());
-    lines.push(format!("Tous les chemins commencent par \"{}\".", base_path));
-    lines.push("Max 12 actions. Types : create_folder, move_file, rename, delete_file, delete_folder. N'utilise delete que si vraiment nécessaire.".to_string());
+    lines.push("INSTRUCTION : Propose un plan d'organisation COMPLET. Tu dois :".to_string());
+    lines.push("1. Créer les sous-dossiers nécessaires (create_folder)".to_string());
+    lines.push("2. Déplacer CHAQUE fichier dans le bon sous-dossier (move_file) — sans exception".to_string());
+    lines.push(String::new());
+    lines.push("RÈGLES ABSOLUES pour les chemins (système Windows) :".to_string());
+    lines.push(format!("- Tous les chemins commencent EXACTEMENT par : {}", base));
+    lines.push("- Utilise des backslashes \\ (jamais de slash /)".to_string());
+    lines.push("- Pour move_file : \"target\" = chemin COMPLET du fichier destination (dossier + nom du fichier)".to_string());
+    lines.push(String::new());
+    // Concrete example with the actual base path
+    let ex_folder = format!("{}\\Documents", base);
+    let ex_src    = format!("{}\\rapport.pdf", base);
+    let ex_dst    = format!("{}\\Documents\\rapport.pdf", base);
+    lines.push("EXEMPLE CORRECT :".to_string());
+    lines.push(format!(r#"{{"summary":"exemple","actions":[{{"type":"create_folder","target":"{ex_folder}","reason":"regrouper les docs"}},{{"type":"move_file","source":"{ex_src}","target":"{ex_dst}","reason":"déplacer vers Documents"}}]}}"#));
+    lines.push(String::new());
+    lines.push("Retourne UNIQUEMENT le JSON (aucun texte avant ou après). Max 30 actions.".to_string());
     lines.join("\n")
+}
+
+fn normalize_win_path(p: &str) -> String {
+    // Replace forward slashes with backslashes and trim trailing separators
+    p.replace('/', "\\").trim_end_matches('\\').to_string()
 }
 
 fn parse_action_plan(json_text: &str, base_path: &str) -> Result<AiActionPlan, String> {
@@ -934,16 +955,24 @@ fn parse_action_plan(json_text: &str, base_path: &str) -> Result<AiActionPlan, S
     let summary = val["summary"].as_str().unwrap_or("Plan proposé par l'IA").to_string();
     let raw     = val["actions"].as_array().ok_or("Pas de liste 'actions'")?;
 
+    let base_norm  = normalize_win_path(base_path).to_lowercase();
+
     let fname = |p: &str| PathBuf::from(p).file_name()
         .map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
 
     let actions = raw.iter().enumerate().filter_map(|(i, a)| {
         let t      = a["type"].as_str().unwrap_or("").to_string();
-        let target = a["target"].as_str().unwrap_or("").to_string();
-        let source = a["source"].as_str().map(|s| s.to_string());
+        // Normalize slashes in AI-generated paths
+        let target = normalize_win_path(a["target"].as_str().unwrap_or(""));
+        let source = a["source"].as_str().map(|s| normalize_win_path(s));
         let reason = a["reason"].as_str().unwrap_or("").to_string();
-        if target.is_empty() || !target.starts_with(base_path) { return None; }
-        if let Some(ref src) = source { if !src.starts_with(base_path) { return None; } }
+
+        // Case-insensitive path validation
+        if target.is_empty() || !target.to_lowercase().starts_with(&base_norm) { return None; }
+        if let Some(ref src) = source {
+            if !src.to_lowercase().starts_with(&base_norm) { return None; }
+        }
+
         let description = match t.as_str() {
             "create_folder" => format!("📁 Créer «{}» — {}", fname(&target), reason),
             "move_file"     => format!("📦 Déplacer «{}» → «{}» — {}",
@@ -994,11 +1023,20 @@ async fn ai_execute_action(action: AiFileAction) -> Result<String, String> {
         }
         "move_file" => {
             let src = PathBuf::from(action.source_path.ok_or("Source manquante")?);
-            let dst = PathBuf::from(&action.target_path);
+            let mut dst = PathBuf::from(&action.target_path);
             if !src.exists() { return Err(format!("Fichier introuvable : {}", src.display())); }
-            if let Some(parent) = dst.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            fs::rename(&src, &dst).map_err(|e| format!("Impossible de déplacer : {}", e))?;
-            Ok("Déplacé".to_string())
+            // If target is an existing directory OR target path ends with a separator,
+            // the AI specified a destination folder — append source filename automatically
+            let target_str = &action.target_path;
+            if dst.is_dir() || target_str.ends_with('\\') || target_str.ends_with('/') {
+                let fname = src.file_name().ok_or("Nom de fichier source invalide")?;
+                dst = dst.join(fname);
+            }
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::rename(&src, &dst).map_err(|e| format!("Impossible de déplacer «{}» : {}", src.display(), e))?;
+            Ok(format!("Déplacé vers {}", dst.display()))
         }
         "rename" => {
             let src = PathBuf::from(action.source_path.ok_or("Source manquante")?);
