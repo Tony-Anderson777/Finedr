@@ -916,7 +916,7 @@ fn build_action_prompt(files: &[FileMetaForAi], base_path: &str) -> String {
     lines.push("Propose un plan d'organisation. Retourne UNIQUEMENT un objet JSON (pas de texte autour) :".to_string());
     lines.push(r#"{"summary":"explication courte","actions":[{"type":"create_folder","target":"CHEMIN","reason":"raison"},{"type":"move_file","source":"SRC","target":"DST","reason":"raison"}]}"#.to_string());
     lines.push(format!("Tous les chemins commencent par \"{}\".", base_path));
-    lines.push("Max 12 actions. Types : create_folder, move_file, rename.".to_string());
+    lines.push("Max 12 actions. Types : create_folder, move_file, rename, delete_file, delete_folder. N'utilise delete que si vraiment nécessaire.".to_string());
     lines.join("\n")
 }
 
@@ -944,6 +944,8 @@ fn parse_action_plan(json_text: &str, base_path: &str) -> Result<AiActionPlan, S
             "move_file"     => format!("📦 Déplacer «{}» → «{}» — {}",
                 source.as_deref().map(|s| fname(s)).unwrap_or_default(), fname(&target), reason),
             "rename"        => format!("✏️ Renommer → «{}» — {}", fname(&target), reason),
+            "delete_file"   => format!("🗑️ Supprimer «{}» — {}", fname(source.as_deref().unwrap_or(&target)), reason),
+            "delete_folder" => format!("🗑️ Supprimer dossier «{}» — {}", fname(source.as_deref().unwrap_or(&target)), reason),
             _               => return None,
         };
         Some(AiFileAction { id: format!("a{}", i), action_type: t, description, source_path: source, target_path: target })
@@ -992,6 +994,29 @@ async fn ai_execute_action(action: AiFileAction) -> Result<String, String> {
             if !src.exists() { return Err(format!("Fichier introuvable : {}", src.display())); }
             fs::rename(&src, &dst).map_err(|e| format!("Impossible de renommer : {}", e))?;
             Ok("Renommé".to_string())
+        }
+        "delete_file" => {
+            let src = PathBuf::from(action.source_path.ok_or("Chemin source manquant")?);
+            if !src.exists() { return Err(format!("Fichier introuvable : {}", src.display())); }
+            if !src.is_file() { return Err("Le chemin ne pointe pas vers un fichier".to_string()); }
+            // Block system paths
+            let path_str = src.to_string_lossy().to_lowercase();
+            if path_str.contains("windows") || path_str.contains("program files") {
+                return Err("Suppression refusée : chemin système protégé".to_string());
+            }
+            fs::remove_file(&src).map_err(|e| format!("Impossible de supprimer : {}", e))?;
+            Ok("Fichier supprimé".to_string())
+        }
+        "delete_folder" => {
+            let src = PathBuf::from(action.source_path.ok_or("Chemin source manquant")?);
+            if !src.exists() { return Err(format!("Dossier introuvable : {}", src.display())); }
+            if !src.is_dir() { return Err("Le chemin ne pointe pas vers un dossier".to_string()); }
+            let path_str = src.to_string_lossy().to_lowercase();
+            if path_str.contains("windows") || path_str.contains("program files") {
+                return Err("Suppression refusée : chemin système protégé".to_string());
+            }
+            fs::remove_dir_all(&src).map_err(|e| format!("Impossible de supprimer : {}", e))?;
+            Ok("Dossier supprimé".to_string())
         }
         t => Err(format!("Action inconnue : {}", t)),
     }

@@ -15,7 +15,8 @@ import {
   LayoutGrid, List, Columns, GalleryHorizontal,
   Sun, Moon, Plus, X, RefreshCw,
   Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud,
-  Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2
+  Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
+  ShieldCheck, ShieldAlert, ShieldX, ZoomIn
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -200,6 +201,7 @@ const FileManagerProvider = ({ children }) => {
   const [breadcrumbs, setBreadcrumbs] = useState([]);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [view, setView] = useState('icons');
+  const [iconSize, setIconSize] = useState(() => localStorage.getItem('iconSize') || 'sm');
   const [userDirs, setUserDirs] = useState([]);
   const [onedriveDirs, setOnedriveDirs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -524,12 +526,13 @@ const FileManagerProvider = ({ children }) => {
     copyFiles,
     cutFiles,
     pasteFiles,
-    refresh: () => fetchFiles(currentPath)
+    refresh: () => fetchFiles(currentPath),
+    iconSize, setIconSize,
   }), [
     displayedFiles, files, currentPath, breadcrumbs, selectedFiles, view, userDirs,
     loading, searchQuery, searchResults, quickLookFile, clipboard, navigationHistory, showHidden,
     navigateToFolder, goBack, goForward, openItem, search, deleteFile, createFolder,
-    renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs
+    renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs, iconSize,
   ]);
 
   return (
@@ -658,27 +661,48 @@ const Sidebar = () => {
 // ============ VIEW SWITCHER ============
 
 const ViewSwitcher = () => {
-  const { view, setView } = useFileManager();
-  
+  const { view, setView, iconSize, setIconSize } = useFileManager();
+
   const views = [
     { id: 'icons', icon: LayoutGrid, label: 'Icônes' },
-    { id: 'list', icon: List, label: 'Liste' },
+    { id: 'list',  icon: List,   label: 'Liste' },
     { id: 'columns', icon: Columns, label: 'Colonnes' },
-    { id: 'gallery', icon: GalleryHorizontal, label: 'Galerie' }
+    { id: 'gallery', icon: GalleryHorizontal, label: 'Galerie' },
   ];
-  
+
+  const sizes = [
+    { id: 'sm', label: 'S', title: 'Petites icônes' },
+    { id: 'lg', label: 'L', title: 'Grandes icônes' },
+    { id: 'xl', label: 'XL', title: 'Très grandes icônes' },
+  ];
+
   return (
-    <div className="flex items-center p-0.5 bg-secondary rounded-md border border-border">
-      {views.map(({ id, icon: Icon, label }) => (
-        <button
-          key={id}
-          onClick={() => setView(id)}
-          className={cn('view-switcher-btn', view === id && 'view-switcher-btn-active')}
-          title={`${label} (Ctrl+${views.findIndex(v => v.id === id) + 1})`}
-        >
-          <Icon size={16} strokeWidth={1.5} />
-        </button>
-      ))}
+    <div className="flex items-center gap-1.5">
+      {/* Size picker — only when in icons view */}
+      {view === 'icons' && (
+        <div className="flex items-center p-0.5 bg-secondary rounded-md border border-border">
+          {sizes.map(({ id, label, title }) => (
+            <button key={id} onClick={() => { setIconSize(id); localStorage.setItem('iconSize', id); }}
+              title={title}
+              className={cn('h-6 px-2 text-[11px] font-semibold rounded transition-colors',
+                iconSize === id ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* View mode buttons */}
+      <div className="flex items-center p-0.5 bg-secondary rounded-md border border-border">
+        {views.map(({ id, icon: Icon, label }) => (
+          <button key={id} onClick={() => setView(id)}
+            className={cn('view-switcher-btn', view === id && 'view-switcher-btn-active')}
+            title={`${label} (Ctrl+${views.findIndex(v => v.id === id) + 1})`}>
+            <Icon size={16} strokeWidth={1.5} />
+          </button>
+        ))}
+      </div>
     </div>
   );
 };
@@ -837,7 +861,7 @@ const TopBar = () => {
 // ============ FILE ITEM (ICON VIEW) ============
 
 const FileItemIcon = ({ file }) => {
-  const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile } = useFileManager();
+  const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile, iconSize } = useFileManager();
   const { showFileSizes } = useTheme();
   const isSelected = selectedFiles.includes(file.path);
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -886,12 +910,15 @@ const FileItemIcon = ({ file }) => {
         )}
       >
         <div className="relative mb-2">
-          <div className="w-16 h-16 flex items-center justify-center">
-            {getFileIcon(file.file_type, file.extension, 48)}
+          <div className={cn('flex items-center justify-center',
+            iconSize === 'xl' ? 'w-28 h-28' : iconSize === 'lg' ? 'w-20 h-20' : 'w-16 h-16'
+          )}>
+            {getFileIcon(file.file_type, file.extension, iconSize === 'xl' ? 72 : iconSize === 'lg' ? 56 : 40)}
           </div>
         </div>
         <span className={cn(
-          'text-center text-[12px] leading-tight line-clamp-2 max-w-[80px]',
+          'text-center leading-tight line-clamp-2',
+          iconSize === 'xl' ? 'text-[13px] max-w-[120px]' : iconSize === 'lg' ? 'text-[12px] max-w-[90px]' : 'text-[11px] max-w-[72px]',
           isSelected ? 'text-primary font-medium' : 'text-foreground'
         )}>
           {file.name}
@@ -956,11 +983,17 @@ const FileItemIcon = ({ file }) => {
 // ============ ICONS VIEW ============
 
 const IconsView = () => {
-  const { files, setSelectedFiles } = useFileManager();
+  const { files, setSelectedFiles, iconSize } = useFileManager();
 
   return (
     <div
-      className="h-full overflow-y-auto p-4 grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1 content-start"
+      className={cn('h-full overflow-y-auto p-4 gap-1 content-start',
+        iconSize === 'xl'
+          ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5'
+          : iconSize === 'lg'
+          ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7'
+          : 'grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10'
+      )}
       onClick={(e) => {
         if (e.target === e.currentTarget) setSelectedFiles([]);
       }}
@@ -1630,6 +1663,96 @@ const SettingsPanel = () => {
   );
 };
 
+// ============ AI PERMISSION SYSTEM ============
+
+// Risk level per action type
+const AI_PERMISSION_LEVEL = {
+  create_folder: 'safe',      // auto-execute, no dialog
+  move_file:     'caution',   // confirm once, can remember
+  rename:        'caution',
+  delete_file:   'danger',    // always confirm, cannot save
+  delete_folder: 'danger',
+};
+
+const PERM_LABELS = {
+  safe:    { icon: ShieldCheck, color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/25', label: 'Sûre' },
+  caution: { icon: ShieldAlert, color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/25', label: 'Modérée' },
+  danger:  { icon: ShieldX,     color: 'text-red-500',    bg: 'bg-red-500/10',    border: 'border-red-500/25',   label: 'Sensible' },
+};
+
+const AiPermissionDialog = ({ action, onAllow, onAllowAlways, onDeny }) => {
+  const level = AI_PERMISSION_LEVEL[action.action_type] || 'caution';
+  const { icon: Icon, color, bg, border, label } = PERM_LABELS[level];
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-background border border-border rounded-2xl shadow-2xl w-[420px] overflow-hidden animate-scale-in">
+
+        {/* Header */}
+        <div className={cn('flex items-center gap-3 px-5 py-4', bg, border, 'border-b')}>
+          <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center', bg, 'border', border)}>
+            <Icon size={20} className={color} />
+          </div>
+          <div>
+            <p className="font-semibold text-[14px]">Autorisation requise</p>
+            <p className={cn('text-[11px]', color)}>Action {label.toLowerCase()} — confirmez avant d'exécuter</p>
+          </div>
+        </div>
+
+        {/* Action detail */}
+        <div className="px-5 py-4">
+          <div className="rounded-xl bg-secondary/60 border border-border px-4 py-3 mb-4">
+            <p className="text-[11px] text-muted-foreground mb-1 uppercase tracking-wide font-medium">
+              {action.action_type === 'delete_file' ? 'Suppression de fichier' :
+               action.action_type === 'delete_folder' ? 'Suppression de dossier' :
+               action.action_type === 'move_file' ? 'Déplacement de fichier' :
+               action.action_type === 'rename' ? 'Renommage' : 'Action IA'}
+            </p>
+            <p className="text-[12px] leading-relaxed">{action.description}</p>
+            {action.source_path && (
+              <p className="text-[10px] text-muted-foreground mt-2 font-mono truncate">
+                {action.source_path}
+              </p>
+            )}
+            <p className="text-[10px] text-muted-foreground mt-0.5 font-mono truncate">
+              → {action.target_path}
+            </p>
+          </div>
+
+          {level === 'danger' && (
+            <div className="flex items-start gap-2 rounded-xl bg-red-500/8 border border-red-500/20 px-3 py-2 mb-4">
+              <ShieldX size={12} className="text-red-500 mt-0.5 flex-shrink-0" />
+              <p className="text-[11px] text-red-600 dark:text-red-400">
+                Cette action est <strong>irréversible</strong>. Le fichier sera supprimé définitivement.
+              </p>
+            </div>
+          )}
+
+          {/* Buttons */}
+          <div className="flex gap-2">
+            <button onClick={onDeny}
+              className="flex-1 h-9 rounded-xl border border-border bg-secondary/50 text-[12px] font-medium hover:bg-secondary transition-colors">
+              Refuser
+            </button>
+            {level !== 'danger' && (
+              <button onClick={onAllowAlways}
+                className="flex-1 h-9 rounded-xl border border-primary/30 bg-primary/8 text-primary text-[12px] font-medium hover:bg-primary/15 transition-colors">
+                Toujours autoriser
+              </button>
+            )}
+            <button onClick={onAllow}
+              className={cn('flex-1 h-9 rounded-xl text-[12px] font-medium transition-colors text-white',
+                level === 'danger' ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary/90'
+              )}>
+              {level === 'danger' ? 'Supprimer quand même' : 'Autoriser'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ AI PANEL ============
 
 const AiPanel = () => {
@@ -1646,6 +1769,11 @@ const AiPanel = () => {
   const [proposing, setProposing]       = useState(false);
   const [executing, setExecuting]       = useState(new Set());
   const [done, setDone]                 = useState(new Set());
+  const [permDialog, setPermDialog]     = useState(null); // { action, resolve }
+  const [alwaysAllowed, setAlwaysAllowed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('aiAlwaysAllowed') || '[]')); }
+    catch { return new Set(); }
+  });
 
   const bottomRef  = useRef(null);
   const textareaRef = useRef(null);
@@ -1694,7 +1822,26 @@ const AiPanel = () => {
     finally { setProposing(false); }
   };
 
+  // Request user permission for non-safe actions
+  const requestPermission = (action) => new Promise((resolve) => {
+    setPermDialog({ action, resolve });
+  });
+
   const executeAction = async (action) => {
+    const level = AI_PERMISSION_LEVEL[action.action_type] || 'caution';
+
+    // Safe actions → auto-execute
+    if (level !== 'safe' && !alwaysAllowed.has(action.action_type)) {
+      const { granted, always } = await requestPermission(action);
+      setPermDialog(null);
+      if (!granted) return;
+      if (always && level !== 'danger') {
+        const next = new Set([...alwaysAllowed, action.action_type]);
+        setAlwaysAllowed(next);
+        localStorage.setItem('aiAlwaysAllowed', JSON.stringify([...next]));
+      }
+    }
+
     setExecuting(p => new Set([...p, action.id]));
     try {
       await invoke('ai_execute_action', { action });
@@ -1757,7 +1904,21 @@ const AiPanel = () => {
   const showProviderToggle = aiProvider === 'both';
   const missingKey = (aiProvider === 'claude' || aiProvider === 'both') && activeProvider === 'claude' && !claudeKey;
 
+  // Badge on action cards showing risk level
+  const RiskBadge = ({ type }) => {
+    const level = AI_PERMISSION_LEVEL[type] || 'caution';
+    const { color, label } = PERM_LABELS[level];
+    const Icon = PERM_LABELS[level].icon;
+    return (
+      <span className={cn('inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-full', color,
+        level === 'safe' ? 'bg-green-500/10' : level === 'danger' ? 'bg-red-500/10' : 'bg-yellow-500/10')}>
+        <Icon size={8}/>{label}
+      </span>
+    );
+  };
+
   return (
+    <>
     <div className="fixed inset-0 z-40 flex justify-end" onClick={() => setAiPanelOpen(false)}>
       <div className="settings-panel w-[480px] h-full flex flex-col" onClick={e => e.stopPropagation()}>
 
@@ -1926,7 +2087,10 @@ const AiPanel = () => {
                       isDone ? 'bg-green-500/5 border-green-500/20 opacity-50' : 'bg-secondary/40 border-border hover:border-primary/30'
                     )}>
                     <div className="mt-0.5 flex-shrink-0">{actionIcon(action.action_type)}</div>
-                    <p className="flex-1 text-[11.5px] leading-relaxed text-foreground/80">{action.description}</p>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11.5px] leading-relaxed text-foreground/80">{action.description}</p>
+                      <RiskBadge type={action.action_type} />
+                    </div>
                     <button onClick={() => executeAction(action)} disabled={isDone || isRunning}
                       className={cn('flex-shrink-0 h-7 px-2.5 rounded-lg text-[11px] font-medium transition-colors flex items-center gap-1',
                         isDone ? 'bg-green-500/10 text-green-500 cursor-default' : 'bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40'
@@ -1941,6 +2105,16 @@ const AiPanel = () => {
         )}
       </div>
     </div>
+    {/* Permission dialog — overlays everything */}
+    {permDialog && (
+      <AiPermissionDialog
+        action={permDialog.action}
+        onAllow={() => permDialog.resolve({ granted: true,  always: false })}
+        onAllowAlways={() => permDialog.resolve({ granted: true,  always: true  })}
+        onDeny={() => permDialog.resolve({ granted: false, always: false })}
+      />
+    )}
+    </>
   );
 };
 
