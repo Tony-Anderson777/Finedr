@@ -1789,21 +1789,33 @@ const AiPanel = () => {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, chatLoading]);
 
   const reqParams = () => ({
-    path: currentPath,
+    path: currentPath || '',
     provider: activeProvider,
     api_key: activeProvider === 'claude' ? claudeKey : null,
     model: activeProvider === 'claude' ? 'claude-haiku-4-5-20251001' : ollamaModel,
     question: null,
+    history: null,
   });
 
   const sendMessage = async () => {
     const q = question.trim();
-    if (!q || chatLoading || !currentPath) return;
-    setMessages(p => [...p, { role: 'user', content: q, ts: Date.now() }]);
+    if (!q || chatLoading) return;
+
+    const newUserMsg = { role: 'user', content: q, ts: Date.now() };
+    const updatedMessages = [...messages, newUserMsg];
+    setMessages(updatedMessages);
     setQuestion('');
     setChatLoading(true);
+
+    // Build conversation history for the API (exclude errors, keep user/assistant pairs)
+    const history = messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }));
+
     try {
-      const text = await invoke('ai_analyze', { request: { ...reqParams(), question: q } });
+      const text = await invoke('ai_analyze', {
+        request: { ...reqParams(), question: q, history },
+      });
       setMessages(p => [...p, { role: 'assistant', content: text, ts: Date.now(), provider: activeProvider }]);
     } catch (e) {
       setMessages(p => [...p, { role: 'error', content: String(e), ts: Date.now() }]);
@@ -1974,19 +1986,31 @@ const AiPanel = () => {
                   <Bot size={30} strokeWidth={1} className="text-primary"/>
                 </div>
                 <div>
-                  <p className="text-[13px] font-medium">Posez une question</p>
+                  <p className="text-[13px] font-medium">Comment puis-je t'aider ?</p>
                   <p className="text-[11px] text-muted-foreground mt-1 max-w-[260px]">
-                    L'IA analyse les noms et métadonnées de tes fichiers pour suggérer une organisation optimale.
+                    {currentPath
+                      ? "Pose n'importe quelle question — le contexte du dossier ouvert est inclus automatiquement."
+                      : "Ouvre un dossier pour les analyses de fichiers, ou pose directement une question générale."}
                   </p>
                 </div>
-                <div className="flex flex-col gap-2 w-full max-w-[300px]">
-                  {['Suggère une organisation pour ce dossier', 'Quels fichiers puis-je archiver ?', 'Y a-t-il des doublons probables ?', 'Comment améliorer le nommage des fichiers ?'].map(s => (
-                    <button key={s} onClick={() => { setQuestion(s); textareaRef.current?.focus(); }}
-                      className="text-[11px] px-3.5 py-2 rounded-xl border border-border hover:border-primary/40 hover:bg-primary/5 transition-all text-left text-foreground/70">
-                      {s}
-                    </button>
-                  ))}
-                </div>
+                {currentPath && (
+                  <div className="flex flex-col gap-2 w-full max-w-[300px]">
+                    {['Suggère une organisation pour ce dossier', 'Quels fichiers puis-je archiver ?', 'Y a-t-il des doublons probables ?', 'Comment améliorer le nommage des fichiers ?'].map(s => (
+                      <button key={s} onClick={() => { setQuestion(s); textareaRef.current?.focus(); }}
+                        className="text-[11px] px-3.5 py-2 rounded-xl border border-border hover:border-primary/40 hover:bg-primary/5 transition-all text-left text-foreground/70">
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {messages.length > 0 && (
+              <div className="flex justify-end mb-2">
+                <button onClick={() => setMessages([])}
+                  className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors px-2 py-0.5 rounded">
+                  Effacer la conversation
+                </button>
               </div>
             )}
             {messages.map((msg, i) => renderMsg(msg, i))}
@@ -2019,19 +2043,19 @@ const AiPanel = () => {
                 value={question}
                 onChange={e => setQuestion(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                placeholder="Pose une question… (Entrée pour envoyer, Maj+Entrée pour saut de ligne)"
+                placeholder={currentPath ? 'Pose une question sur ce dossier… (Entrée pour envoyer)' : 'Pose une question à l\'IA… (Entrée pour envoyer)'}
                 rows={3}
-                disabled={!currentPath || chatLoading}
+                disabled={chatLoading}
                 className="flex-1 px-3.5 py-2.5 text-[12px] bg-secondary/50 border border-input rounded-xl focus:outline-none focus:border-primary resize-none leading-relaxed disabled:opacity-50 transition-colors"
               />
               <button onClick={sendMessage}
-                disabled={!question.trim() || chatLoading || !currentPath}
+                disabled={!question.trim() || chatLoading}
                 className="h-10 w-10 flex-shrink-0 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-40 hover:bg-primary/90 transition-colors">
                 {chatLoading ? <Loader2 size={16} className="animate-spin"/> : <Send size={16}/>}
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground/50 text-center">
-              Noms et métadonnées uniquement — le contenu des fichiers n'est jamais transmis
+              {currentPath ? 'Noms et métadonnées uniquement — le contenu des fichiers n\'est jamais transmis' : 'Mode conversation libre — aucun fichier analysé'}
             </p>
           </div>
         </>}

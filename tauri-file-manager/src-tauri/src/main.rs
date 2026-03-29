@@ -765,6 +765,13 @@ pub struct AiAnalysisRequest {
     pub api_key: Option<String>,
     pub model: String,          // "claude-haiku-4-5-20251001" or "llama3.2" etc.
     pub question: Option<String>,
+    pub history: Option<Vec<AiChatMessage>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiChatMessage {
+    pub role: String,    // "user" | "assistant"
+    pub content: String,
 }
 
 fn collect_metadata_for_ai(path: &Path) -> Result<Vec<FileMetaForAi>, String> {
@@ -796,10 +803,10 @@ fn collect_metadata_for_ai(path: &Path) -> Result<Vec<FileMetaForAi>, String> {
     Ok(files)
 }
 
-fn build_ai_prompt(files: &[FileMetaForAi], path: &str, question: &Option<String>) -> String {
+fn build_file_context(files: &[FileMetaForAi], path: &str) -> String {
     let mut lines = vec![
-        format!("Répertoire : {}", path),
-        format!("Éléments analysés : {}", files.len()),
+        format!("Répertoire actif : {}", path),
+        format!("Éléments : {}", files.len()),
         String::new(),
         "Contenu (métadonnées uniquement) :".to_string(),
     ];
@@ -813,26 +820,22 @@ fn build_ai_prompt(files: &[FileMetaForAi], path: &str, question: &Option<String
         };
         lines.push(format!("{} {}{}{} [{}]", icon, f.name, ext, size, f.modified));
     }
-    lines.push(String::new());
-    match question.as_deref() {
-        Some(q) if !q.trim().is_empty() => lines.push(format!("Question : {}", q)),
-        _ => {
-            lines.push("Analyse ce répertoire et fournis :".to_string());
-            lines.push("1. Patterns observés (types de fichiers, dates, conventions de nommage)".to_string());
-            lines.push("2. Suggestions d'organisation concrètes".to_string());
-            lines.push("3. Anomalies éventuelles (doublons probables, très gros fichiers, nommage incohérent)".to_string());
-        }
-    }
     lines.join("\n")
 }
 
-async fn call_claude(prompt: &str, api_key: &str, model: &str) -> Result<String, String> {
+
+async fn call_claude(
+    messages: &[serde_json::Value],
+    system: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<String, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "model": model,
-        "max_tokens": 1024,
-        "system": AI_SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": prompt}]
+        "max_tokens": 2048,
+        "system": system,
+        "messages": messages
     });
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
@@ -856,18 +859,20 @@ async fn call_claude(prompt: &str, api_key: &str, model: &str) -> Result<String,
         .ok_or_else(|| "Réponse Claude invalide".to_string())
 }
 
-async fn call_ollama(prompt: &str, model: &str) -> Result<String, String> {
+async fn call_ollama(
+    messages: &[serde_json::Value],
+    model: &str,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build().map_err(|e| e.to_string())?;
-    let full_prompt = format!("{}\n\n{}", AI_SYSTEM_PROMPT, prompt);
     let body = serde_json::json!({
         "model": model,
-        "prompt": full_prompt,
+        "messages": messages,
         "stream": false
     });
     let resp = client
-        .post("http://localhost:11434/api/generate")
+        .post("http://localhost:11434/api/chat")
         .json(&body)
         .send().await
         .map_err(|e| format!("Ollama inaccessible : {}", e))?;
@@ -877,7 +882,7 @@ async fn call_ollama(prompt: &str, model: &str) -> Result<String, String> {
         return Err(format!("Erreur Ollama {} — modèle '{}' introuvable ?", code, model));
     }
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    data["response"].as_str()
+    data["message"]["content"].as_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Réponse Ollama invalide".to_string())
 }
@@ -960,14 +965,21 @@ async fn ai_propose_actions(request: AiAnalysisRequest) -> Result<AiActionPlan, 
     if !path.is_dir() { return Err(format!("Chemin invalide : {}", request.path)); }
     let files  = collect_metadata_for_ai(&path)?;
     let prompt = build_action_prompt(&files, &request.path);
-    let json   = match request.provider.as_str() {
+    let msgs = vec![serde_json::json!({ "role": "user", "content": prompt })];
+    let json = match request.provider.as_str() {
         "claude" => {
             let key = request.api_key.as_deref().filter(|k| !k.trim().is_empty())
                 .ok_or("Clé API Claude manquante")?;
-            call_claude(&prompt, key, &request.model).await?
+            call_claude(&msgs, AI_SYSTEM_PROMPT, key, &request.model).await?
         }
-        "ollama" => call_ollama(&prompt, &request.model).await?,
-        other    => return Err(format!("Fournisseur inconnu : {}", other)),
+        "ollama" => {
+            let ollama_msgs = vec![
+                serde_json::json!({ "role": "system", "content": AI_SYSTEM_PROMPT }),
+                serde_json::json!({ "role": "user",   "content": prompt }),
+            ];
+            call_ollama(&ollama_msgs, &request.model).await?
+        }
+        other => return Err(format!("Fournisseur inconnu : {}", other)),
     };
     parse_action_plan(&json, &request.path)
 }
@@ -1035,21 +1047,51 @@ async fn check_ollama() -> bool {
 
 #[tauri::command]
 async fn ai_analyze(request: AiAnalysisRequest) -> Result<String, String> {
-    let path = PathBuf::from(&request.path);
-    if !path.is_dir() {
-        return Err(format!("Chemin invalide ou inaccessible : {}", request.path));
+    // Build file context (optional – only if a valid directory is open)
+    let file_context: Option<String> = {
+        let path = PathBuf::from(&request.path);
+        if path.is_dir() {
+            let files = collect_metadata_for_ai(&path)?;
+            Some(build_file_context(&files, &request.path))
+        } else {
+            None
+        }
+    };
+
+    // System prompt = base instructions + optional file context
+    let system = match &file_context {
+        Some(ctx) => format!("{}\n\n{}", AI_SYSTEM_PROMPT, ctx),
+        None      => AI_SYSTEM_PROMPT.to_string(),
+    };
+
+    // Build conversation messages from history
+    let mut messages: Vec<serde_json::Value> = vec![];
+    if let Some(history) = &request.history {
+        for msg in history {
+            messages.push(serde_json::json!({ "role": msg.role, "content": msg.content }));
+        }
     }
-    let files = collect_metadata_for_ai(&path)?;
-    let prompt = build_ai_prompt(&files, &request.path, &request.question);
+
+    // Append current user question
+    let q = request.question.as_deref().unwrap_or("").trim().to_string();
+    if q.is_empty() { return Err("Message vide".to_string()); }
+    messages.push(serde_json::json!({ "role": "user", "content": q }));
 
     match request.provider.as_str() {
         "claude" => {
             let key = request.api_key.as_deref()
                 .filter(|k| !k.trim().is_empty())
                 .ok_or("Clé API Claude manquante — configure-la dans Préférences > IA")?;
-            call_claude(&prompt, key, &request.model).await
+            call_claude(&messages, &system, key, &request.model).await
         }
-        "ollama" => call_ollama(&prompt, &request.model).await,
+        "ollama" => {
+            // Ollama /api/chat uses a system role message
+            let mut ollama_msgs = vec![
+                serde_json::json!({ "role": "system", "content": system })
+            ];
+            ollama_msgs.extend_from_slice(&messages);
+            call_ollama(&ollama_msgs, &request.model).await
+        }
         other => Err(format!("Fournisseur inconnu : {}", other)),
     }
 }
