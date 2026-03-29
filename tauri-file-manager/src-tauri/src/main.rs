@@ -882,6 +882,121 @@ async fn call_ollama(prompt: &str, model: &str) -> Result<String, String> {
         .ok_or_else(|| "Réponse Ollama invalide".to_string())
 }
 
+// ── Action structs ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiFileAction {
+    pub id: String,
+    pub action_type: String,
+    pub description: String,
+    pub source_path: Option<String>,
+    pub target_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AiActionPlan {
+    pub summary: String,
+    pub actions: Vec<AiFileAction>,
+}
+
+fn build_action_prompt(files: &[FileMetaForAi], base_path: &str) -> String {
+    let mut lines = vec![
+        format!("Répertoire : {}", base_path),
+        format!("Éléments : {}", files.len()),
+        String::new(),
+        "Fichiers (métadonnées) :".to_string(),
+    ];
+    for f in files.iter().take(80) {
+        let icon = if f.is_folder { "📁" } else { "📄" };
+        let ext  = f.ext.as_deref().map(|e| format!(".{}", e)).unwrap_or_default();
+        let size = if !f.is_folder { format!(" {:.0}Ko", f.size_kb) } else { String::new() };
+        lines.push(format!("{} {}{}{} [{}]", icon, f.name, ext, size, f.modified));
+    }
+    lines.push(String::new());
+    lines.push("Propose un plan d'organisation. Retourne UNIQUEMENT un objet JSON (pas de texte autour) :".to_string());
+    lines.push(r#"{"summary":"explication courte","actions":[{"type":"create_folder","target":"CHEMIN","reason":"raison"},{"type":"move_file","source":"SRC","target":"DST","reason":"raison"}]}"#.to_string());
+    lines.push(format!("Tous les chemins commencent par \"{}\".", base_path));
+    lines.push("Max 12 actions. Types : create_folder, move_file, rename.".to_string());
+    lines.join("\n")
+}
+
+fn parse_action_plan(json_text: &str, base_path: &str) -> Result<AiActionPlan, String> {
+    let start = json_text.find('{').ok_or("Aucun JSON dans la réponse — réessaie ou change de modèle")?;
+    let end   = json_text.rfind('}').ok_or("JSON incomplet")? + 1;
+    let val: serde_json::Value = serde_json::from_str(&json_text[start..end])
+        .map_err(|e| format!("JSON invalide : {}. Réessaie.", e))?;
+
+    let summary = val["summary"].as_str().unwrap_or("Plan proposé par l'IA").to_string();
+    let raw     = val["actions"].as_array().ok_or("Pas de liste 'actions'")?;
+
+    let fname = |p: &str| PathBuf::from(p).file_name()
+        .map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+
+    let actions = raw.iter().enumerate().filter_map(|(i, a)| {
+        let t      = a["type"].as_str().unwrap_or("").to_string();
+        let target = a["target"].as_str().unwrap_or("").to_string();
+        let source = a["source"].as_str().map(|s| s.to_string());
+        let reason = a["reason"].as_str().unwrap_or("").to_string();
+        if target.is_empty() || !target.starts_with(base_path) { return None; }
+        if let Some(ref src) = source { if !src.starts_with(base_path) { return None; } }
+        let description = match t.as_str() {
+            "create_folder" => format!("📁 Créer «{}» — {}", fname(&target), reason),
+            "move_file"     => format!("📦 Déplacer «{}» → «{}» — {}",
+                source.as_deref().map(|s| fname(s)).unwrap_or_default(), fname(&target), reason),
+            "rename"        => format!("✏️ Renommer → «{}» — {}", fname(&target), reason),
+            _               => return None,
+        };
+        Some(AiFileAction { id: format!("a{}", i), action_type: t, description, source_path: source, target_path: target })
+    }).collect();
+
+    Ok(AiActionPlan { summary, actions })
+}
+
+#[tauri::command]
+async fn ai_propose_actions(request: AiAnalysisRequest) -> Result<AiActionPlan, String> {
+    let path = PathBuf::from(&request.path);
+    if !path.is_dir() { return Err(format!("Chemin invalide : {}", request.path)); }
+    let files  = collect_metadata_for_ai(&path)?;
+    let prompt = build_action_prompt(&files, &request.path);
+    let json   = match request.provider.as_str() {
+        "claude" => {
+            let key = request.api_key.as_deref().filter(|k| !k.trim().is_empty())
+                .ok_or("Clé API Claude manquante")?;
+            call_claude(&prompt, key, &request.model).await?
+        }
+        "ollama" => call_ollama(&prompt, &request.model).await?,
+        other    => return Err(format!("Fournisseur inconnu : {}", other)),
+    };
+    parse_action_plan(&json, &request.path)
+}
+
+#[tauri::command]
+async fn ai_execute_action(action: AiFileAction) -> Result<String, String> {
+    match action.action_type.as_str() {
+        "create_folder" => {
+            let p = PathBuf::from(&action.target_path);
+            fs::create_dir_all(&p).map_err(|e| format!("Impossible de créer le dossier : {}", e))?;
+            Ok(format!("Dossier créé"))
+        }
+        "move_file" => {
+            let src = PathBuf::from(action.source_path.ok_or("Source manquante")?);
+            let dst = PathBuf::from(&action.target_path);
+            if !src.exists() { return Err(format!("Fichier introuvable : {}", src.display())); }
+            if let Some(parent) = dst.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+            fs::rename(&src, &dst).map_err(|e| format!("Impossible de déplacer : {}", e))?;
+            Ok("Déplacé".to_string())
+        }
+        "rename" => {
+            let src = PathBuf::from(action.source_path.ok_or("Source manquante")?);
+            let dst = PathBuf::from(&action.target_path);
+            if !src.exists() { return Err(format!("Fichier introuvable : {}", src.display())); }
+            fs::rename(&src, &dst).map_err(|e| format!("Impossible de renommer : {}", e))?;
+            Ok("Renommé".to_string())
+        }
+        t => Err(format!("Action inconnue : {}", t)),
+    }
+}
+
 #[tauri::command]
 async fn check_ollama() -> bool {
     let Ok(client) = reqwest::Client::builder()
@@ -939,6 +1054,8 @@ fn main() {
             open_file_with_default_app,
             check_ollama,
             ai_analyze,
+            ai_propose_actions,
+            ai_execute_action,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
