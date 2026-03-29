@@ -1,7 +1,7 @@
 // Smart File Manager - Application Tauri pour Windows
 // Accès au vrai système de fichiers Windows
 
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { Toaster, toast } from 'sonner';
 import { clsx } from 'clsx';
@@ -1634,182 +1634,311 @@ const SettingsPanel = () => {
 
 const AiPanel = () => {
   const { aiPanelOpen, setAiPanelOpen, aiProvider, claudeKey, ollamaModel } = useTheme();
-  const { currentPath } = useFileManager();
+  const { currentPath, refresh } = useFileManager();
 
-  const [activeProvider, setActiveProvider] = useState('claude');
-  const [question, setQuestion] = useState('');
-  const [result, setResult] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [tab, setTab]                   = useState('chat');
+  const [activeProvider, setActiveProvider] = useState('ollama');
+  const [messages, setMessages]         = useState([]);
+  const [question, setQuestion]         = useState('');
+  const [chatLoading, setChatLoading]   = useState(false);
+  const [actions, setActions]           = useState([]);
+  const [actionSummary, setActionSummary] = useState('');
+  const [proposing, setProposing]       = useState(false);
+  const [executing, setExecuting]       = useState(new Set());
+  const [done, setDone]                 = useState(new Set());
 
-  // When panel opens, default to the configured provider
+  const bottomRef  = useRef(null);
+  const textareaRef = useRef(null);
+
   useEffect(() => {
     if (aiPanelOpen) {
-      setActiveProvider(aiProvider === 'both' ? 'claude' : aiProvider);
-      setResult('');
-      setError('');
+      setActiveProvider(aiProvider === 'both' ? 'ollama' : aiProvider);
+      setMessages([]); setActions([]); setActionSummary('');
+      setDone(new Set()); setTab('chat');
     }
   }, [aiPanelOpen, aiProvider]);
 
-  const analyze = async (provider) => {
-    setLoading(true);
-    setResult('');
-    setError('');
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, chatLoading]);
+
+  const reqParams = () => ({
+    path: currentPath,
+    provider: activeProvider,
+    api_key: activeProvider === 'claude' ? claudeKey : null,
+    model: activeProvider === 'claude' ? 'claude-haiku-4-5-20251001' : ollamaModel,
+    question: null,
+  });
+
+  const sendMessage = async () => {
+    const q = question.trim();
+    if (!q || chatLoading || !currentPath) return;
+    setMessages(p => [...p, { role: 'user', content: q, ts: Date.now() }]);
+    setQuestion('');
+    setChatLoading(true);
     try {
-      const text = await invoke('ai_analyze', {
-        request: {
-          path: currentPath,
-          provider,
-          api_key: provider === 'claude' ? claudeKey : null,
-          model: provider === 'claude' ? 'claude-haiku-4-5-20251001' : ollamaModel,
-          question: question.trim() || null,
-        }
-      });
-      setResult(text);
+      const text = await invoke('ai_analyze', { request: { ...reqParams(), question: q } });
+      setMessages(p => [...p, { role: 'assistant', content: text, ts: Date.now(), provider: activeProvider }]);
     } catch (e) {
-      setError(String(e));
+      setMessages(p => [...p, { role: 'error', content: String(e), ts: Date.now() }]);
     } finally {
-      setLoading(false);
+      setChatLoading(false);
     }
+  };
+
+  const proposeActions = async () => {
+    setProposing(true); setActions([]); setActionSummary(''); setDone(new Set());
+    try {
+      const plan = await invoke('ai_propose_actions', { request: reqParams() });
+      setActions(plan.actions || []);
+      setActionSummary(plan.summary || '');
+    } catch (e) { toast.error(String(e)); }
+    finally { setProposing(false); }
+  };
+
+  const executeAction = async (action) => {
+    setExecuting(p => new Set([...p, action.id]));
+    try {
+      await invoke('ai_execute_action', { action });
+      setDone(p => new Set([...p, action.id]));
+      toast.success(action.description.split(' — ')[0]);
+      refresh();
+    } catch (e) { toast.error(String(e)); }
+    finally { setExecuting(p => { const s = new Set(p); s.delete(action.id); return s; }); }
+  };
+
+  const executeAll = async () => {
+    for (const a of actions.filter(a => !done.has(a.id))) await executeAction(a);
+  };
+
+  const renderMsg = (msg, i) => {
+    if (msg.role === 'user') return (
+      <div key={i} className="flex justify-end mb-3">
+        <div className="max-w-[82%] bg-primary text-primary-foreground rounded-2xl rounded-br-sm px-4 py-2.5 text-[12px] leading-relaxed whitespace-pre-wrap">
+          {msg.content}
+        </div>
+      </div>
+    );
+    if (msg.role === 'error') return (
+      <div key={i} className="flex mb-3">
+        <div className="max-w-[85%] bg-red-500/10 border border-red-500/25 text-red-500 rounded-2xl rounded-bl-sm px-4 py-2.5 text-[12px] flex items-start gap-2">
+          <AlertCircle size={12} className="mt-0.5 flex-shrink-0"/>{msg.content}
+        </div>
+      </div>
+    );
+    return (
+      <div key={i} className="flex mb-3 items-start gap-2">
+        <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+          <Bot size={12} className="text-primary"/>
+        </div>
+        <div className="max-w-[85%] bg-secondary/70 rounded-2xl rounded-bl-sm px-4 py-2.5 text-[12px] leading-relaxed space-y-1">
+          {msg.content.split('\n').map((line, j) => {
+            if (!line.trim()) return <div key={j} className="h-1"/>;
+            const html = line
+              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+              .replace(/^#{1,3}\s/, '')
+              .replace(/^[-•*]\s/, '• ');
+            return <p key={j} className={/^•/.test(html) ? 'pl-2' : ''} dangerouslySetInnerHTML={{ __html: html }}/>;
+          })}
+          <p className="text-[10px] text-muted-foreground/50 pt-1 border-t border-border/40 mt-1">
+            {msg.provider === 'ollama' ? `🦙 ${ollamaModel}` : '✦ Claude Haiku'}
+          </p>
+        </div>
+      </div>
+    );
+  };
+
+  const actionIcon = (type) => {
+    if (type === 'create_folder') return <Folder size={13} className="text-green-500" fill="currentColor" fillOpacity={0.2}/>;
+    if (type === 'move_file')    return <Scissors size={13} className="text-blue-500"/>;
+    return <Edit3 size={13} className="text-orange-400"/>;
   };
 
   if (!aiPanelOpen) return null;
 
-  const canUseClaude = aiProvider === 'claude' || aiProvider === 'both';
-  const canUseOllama = aiProvider === 'ollama' || aiProvider === 'both';
   const showProviderToggle = aiProvider === 'both';
-
-  // Simple line-by-line renderer (bold **text**, bullets)
-  const renderResult = (text) =>
-    text.split('\n').map((line, i) => {
-      const bold = line.replace(/\*\*(.*?)\*\*/g, (_, t) => `<strong>${t}</strong>`);
-      const isBullet = /^[-•*]\s/.test(line);
-      return (
-        <p key={i}
-          className={cn('leading-relaxed', isBullet && 'pl-3', !line && 'h-3')}
-          dangerouslySetInnerHTML={{ __html: isBullet ? bold.replace(/^[-•*]\s/, '• ') : bold }}
-        />
-      );
-    });
+  const missingKey = (aiProvider === 'claude' || aiProvider === 'both') && activeProvider === 'claude' && !claudeKey;
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end" onClick={() => setAiPanelOpen(false)}>
-      <div
-        className="settings-panel w-[380px] h-full flex flex-col"
-        style={{ animationName: 'slideInFromRight' }}
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="relative z-10 flex items-center justify-between px-5 py-4 border-b border-white/20 dark:border-white/8">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center">
-              <Sparkles size={14} strokeWidth={1.5} className="text-primary" />
-            </div>
-            <div>
-              <span className="font-semibold text-[14px] block">Assistant IA</span>
-              <span className="text-[10px] text-muted-foreground">Métadonnées uniquement</span>
-            </div>
-          </div>
-          <button
-            onClick={() => setAiPanelOpen(false)}
-            className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
-          >
-            <X size={14} />
-          </button>
-        </div>
+      <div className="settings-panel w-[480px] h-full flex flex-col" onClick={e => e.stopPropagation()}>
 
-        {/* Body */}
-        <div className="relative z-10 flex-1 flex flex-col px-5 py-4 gap-3 overflow-hidden">
-
-          {/* Current path */}
-          <div className="rounded-lg bg-secondary/60 px-3 py-2 border border-border">
-            <p className="text-[10px] text-muted-foreground mb-0.5">Dossier analysé</p>
-            <p className="text-[12px] font-mono truncate">{currentPath || '(racine)'}</p>
+        {/* ── Header ── */}
+        <div className="relative z-10 flex-shrink-0 px-5 py-3.5 border-b border-white/20 dark:border-white/8 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-primary/15 flex items-center justify-center">
+                <Sparkles size={15} strokeWidth={1.5} className="text-primary"/>
+              </div>
+              <div>
+                <span className="font-semibold text-[14px] block leading-tight">Assistant IA</span>
+                <span className="text-[10px] text-muted-foreground font-mono truncate block max-w-[300px]">
+                  {currentPath || 'Aucun dossier ouvert'}
+                </span>
+              </div>
+            </div>
+            <button onClick={() => setAiPanelOpen(false)}
+              className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
+              <X size={14}/>
+            </button>
           </div>
 
-          {/* Provider toggle (only when "both") */}
+          {/* Provider toggle */}
           {showProviderToggle && (
             <div className="grid grid-cols-2 gap-1.5">
-              {[['claude','Claude (Anthropic)'],['ollama',`Ollama (${ollamaModel})`]].map(([v,l]) => (
+              {[['claude','✦ Claude'],['ollama',`🦙 ${ollamaModel}`]].map(([v,l]) => (
                 <button key={v} onClick={() => setActiveProvider(v)}
-                  className={cn('py-1.5 rounded-lg text-[11px] font-medium border transition-all',
-                    activeProvider === v
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-border hover:border-primary/40 text-foreground/70'
+                  className={cn('py-1 rounded-lg text-[11px] font-medium border transition-all',
+                    activeProvider === v ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/40 text-foreground/60'
                   )}>{l}</button>
               ))}
             </div>
           )}
 
-          {/* Question */}
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={question}
-              onChange={e => setQuestion(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !loading && analyze(activeProvider)}
-              placeholder="Question optionnelle... (Entrée pour analyser)"
-              className="flex-1 h-8 px-3 text-[12px] bg-secondary/50 border border-input rounded-md focus:outline-none focus:border-primary"
-            />
-            <button
-              onClick={() => analyze(activeProvider)}
-              disabled={loading || !currentPath}
-              className="px-3 h-8 rounded-md bg-primary text-primary-foreground text-[12px] font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors flex-shrink-0 flex items-center gap-1.5"
-            >
-              {loading ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-              {loading ? 'Analyse…' : 'Analyser'}
-            </button>
+          {/* Tabs */}
+          <div className="flex gap-1 p-0.5 bg-secondary/60 rounded-lg">
+            {[['chat','💬  Chat'],['actions','⚡  Actions']].map(([t,l]) => (
+              <button key={t} onClick={() => setTab(t)}
+                className={cn('flex-1 py-1.5 rounded-md text-[12px] font-medium transition-all',
+                  tab === t ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Chat Tab ── */}
+        {tab === 'chat' && <>
+          <div className="relative z-10 flex-1 overflow-y-auto px-4 py-4 min-h-0">
+            {messages.length === 0 && !chatLoading && (
+              <div className="flex flex-col items-center justify-center h-full text-center gap-4 pb-4">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+                  <Bot size={30} strokeWidth={1} className="text-primary"/>
+                </div>
+                <div>
+                  <p className="text-[13px] font-medium">Posez une question</p>
+                  <p className="text-[11px] text-muted-foreground mt-1 max-w-[260px]">
+                    L'IA analyse les noms et métadonnées de tes fichiers pour suggérer une organisation optimale.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 w-full max-w-[300px]">
+                  {['Suggère une organisation pour ce dossier', 'Quels fichiers puis-je archiver ?', 'Y a-t-il des doublons probables ?', 'Comment améliorer le nommage des fichiers ?'].map(s => (
+                    <button key={s} onClick={() => { setQuestion(s); textareaRef.current?.focus(); }}
+                      className="text-[11px] px-3.5 py-2 rounded-xl border border-border hover:border-primary/40 hover:bg-primary/5 transition-all text-left text-foreground/70">
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {messages.map((msg, i) => renderMsg(msg, i))}
+            {chatLoading && (
+              <div className="flex mb-3 items-start gap-2">
+                <div className="w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0">
+                  <Loader2 size={12} className="text-primary animate-spin"/>
+                </div>
+                <div className="bg-secondary/70 rounded-2xl rounded-bl-sm px-4 py-3 flex gap-1.5 items-center">
+                  {[0, 150, 300].map(d => (
+                    <span key={d} className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce"
+                      style={{ animationDelay: `${d}ms` }}/>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef}/>
           </div>
 
-          {/* Config warning */}
-          {!canUseClaude && !canUseOllama && (
-            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 px-3 py-2 text-[11px] text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
-              <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
-              <span>Configure un fournisseur IA dans <button className="underline" onClick={() => { setAiPanelOpen(false); }}>Préférences</button>.</span>
+          {/* Input */}
+          <div className="relative z-10 flex-shrink-0 px-4 pb-4 pt-2 border-t border-white/10 dark:border-white/5 space-y-2">
+            {missingKey && (
+              <p className="text-[10px] text-yellow-500 flex items-center gap-1">
+                <AlertCircle size={10}/>Clé Claude manquante — configure-la dans Préférences › IA
+              </p>
+            )}
+            <div className="flex gap-2 items-end">
+              <textarea
+                ref={textareaRef}
+                value={question}
+                onChange={e => setQuestion(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                placeholder="Pose une question… (Entrée pour envoyer, Maj+Entrée pour saut de ligne)"
+                rows={3}
+                disabled={!currentPath || chatLoading}
+                className="flex-1 px-3.5 py-2.5 text-[12px] bg-secondary/50 border border-input rounded-xl focus:outline-none focus:border-primary resize-none leading-relaxed disabled:opacity-50 transition-colors"
+              />
+              <button onClick={sendMessage}
+                disabled={!question.trim() || chatLoading || !currentPath}
+                className="h-10 w-10 flex-shrink-0 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-40 hover:bg-primary/90 transition-colors">
+                {chatLoading ? <Loader2 size={16} className="animate-spin"/> : <Send size={16}/>}
+              </button>
             </div>
-          )}
-          {canUseClaude && activeProvider === 'claude' && !claudeKey && (
-            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 px-3 py-2 text-[11px] text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
-              <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
-              <span>Clé API Claude manquante — ajoute-la dans Préférences &gt; IA.</span>
-            </div>
-          )}
+            <p className="text-[10px] text-muted-foreground/50 text-center">
+              Noms et métadonnées uniquement — le contenu des fichiers n'est jamais transmis
+            </p>
+          </div>
+        </>}
 
-          {/* Error */}
-          {error && (
-            <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-[11px] text-red-600 dark:text-red-400 flex items-start gap-2">
-              <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
-              <span className="break-words">{error}</span>
+        {/* ── Actions Tab ── */}
+        {tab === 'actions' && (
+          <div className="relative z-10 flex-1 flex flex-col min-h-0 overflow-hidden">
+            <div className="px-4 pt-4 pb-3 flex-shrink-0 space-y-2">
+              <button onClick={proposeActions} disabled={proposing || !currentPath}
+                className="w-full h-10 rounded-xl bg-primary text-primary-foreground text-[13px] font-medium flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-primary/90 transition-colors">
+                {proposing
+                  ? <><Loader2 size={15} className="animate-spin"/>Analyse en cours…</>
+                  : <><Sparkles size={15}/>Proposer un plan d'organisation</>}
+              </button>
+              {actionSummary && (
+                <p className="text-[11px] text-muted-foreground px-1 leading-relaxed">{actionSummary}</p>
+              )}
+              {actions.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground">
+                    {actions.length} action{actions.length > 1 ? 's' : ''} · {done.size} exécutée{done.size > 1 ? 's' : ''}
+                  </span>
+                  <button onClick={executeAll}
+                    disabled={actions.every(a => done.has(a.id)) || executing.size > 0}
+                    className="text-[11px] px-3 py-1 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40">
+                    Tout exécuter
+                  </button>
+                </div>
+              )}
             </div>
-          )}
 
-          {/* Result */}
-          {result && (
-            <div className="flex-1 overflow-y-auto rounded-lg bg-secondary/40 border border-border px-4 py-3 text-[12px] leading-relaxed space-y-0.5">
-              {renderResult(result)}
+            <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2 min-h-0">
+              {!proposing && actions.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-full text-center gap-3 text-muted-foreground">
+                  <div className="w-14 h-14 rounded-2xl bg-secondary flex items-center justify-center">
+                    <Sparkles size={22} strokeWidth={1} className="opacity-40"/>
+                  </div>
+                  <p className="text-[12px] max-w-[260px]">
+                    L'IA va analyser le dossier et te proposer un plan concret : créer des sous-dossiers, déplacer et renommer tes fichiers.
+                  </p>
+                  <p className="text-[11px] text-yellow-600 dark:text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 max-w-[280px]">
+                    ⚠️ Chaque action modifie réellement tes fichiers. Lis les propositions avant d'exécuter.
+                  </p>
+                </div>
+              )}
+
+              {actions.map(action => {
+                const isDone    = done.has(action.id);
+                const isRunning = executing.has(action.id);
+                return (
+                  <div key={action.id}
+                    className={cn('flex items-start gap-3 p-3.5 rounded-xl border transition-all',
+                      isDone ? 'bg-green-500/5 border-green-500/20 opacity-50' : 'bg-secondary/40 border-border hover:border-primary/30'
+                    )}>
+                    <div className="mt-0.5 flex-shrink-0">{actionIcon(action.action_type)}</div>
+                    <p className="flex-1 text-[11.5px] leading-relaxed text-foreground/80">{action.description}</p>
+                    <button onClick={() => executeAction(action)} disabled={isDone || isRunning}
+                      className={cn('flex-shrink-0 h-7 px-2.5 rounded-lg text-[11px] font-medium transition-colors flex items-center gap-1',
+                        isDone ? 'bg-green-500/10 text-green-500 cursor-default' : 'bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40'
+                      )}>
+                      {isDone ? <><CheckCircle2 size={12}/>OK</> : isRunning ? <Loader2 size={12} className="animate-spin"/> : 'Exécuter'}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
-          )}
-
-          {/* Empty state */}
-          {!result && !error && !loading && (
-            <div className="flex-1 flex flex-col items-center justify-center text-center text-muted-foreground gap-3">
-              <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center">
-                <Bot size={28} strokeWidth={1} className="text-primary" />
-              </div>
-              <div>
-                <p className="text-[13px] font-medium">Analyse intelligente</p>
-                <p className="text-[11px] mt-1">Patterns, organisation, anomalies</p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer disclaimer */}
-        <div className="relative z-10 px-5 py-3 border-t border-white/20 dark:border-white/8">
-          <p className="text-[10px] text-muted-foreground text-center">
-            L'IA accède uniquement aux noms et métadonnées — jamais au contenu des fichiers.
-          </p>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
