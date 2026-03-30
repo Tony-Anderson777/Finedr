@@ -16,7 +16,7 @@ import {
   Sun, Moon, Plus, X, RefreshCw,
   Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud,
   Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
-  ShieldCheck, ShieldAlert, ShieldX, ZoomIn
+  ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -139,7 +139,8 @@ const ThemeProvider = ({ children }) => {
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#007AFF');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showFileSizes, setShowFileSizes] = useState(() => localStorage.getItem('showFileSizes') !== 'false');
-  const [aiPanelOpen, setAiPanelOpen]   = useState(false);
+  const [aiPanelOpen, setAiPanelOpen]       = useState(false);
+  const [diskAnalysisOpen, setDiskAnalysisOpen] = useState(false);
   const [aiProvider,  setAiProvider]    = useState(() => localStorage.getItem('aiProvider')  || 'claude');
   const [claudeKey,   setClaudeKey]     = useState(() => localStorage.getItem('claudeKey')   || '');
   const [ollamaModel, setOllamaModel]   = useState(() => localStorage.getItem('ollamaModel') || 'llama3.2');
@@ -184,6 +185,7 @@ const ThemeProvider = ({ children }) => {
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
       aiPanelOpen, setAiPanelOpen,
+      diskAnalysisOpen, setDiskAnalysisOpen,
       aiProvider, setAiProvider,
       claudeKey, setClaudeKey,
       ollamaModel, setOllamaModel,
@@ -830,7 +832,7 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
-  const { setSettingsOpen, setAiPanelOpen } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen } = useTheme();
   const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
   
   const handleSearchChange = (e) => {
@@ -914,6 +916,16 @@ const TopBar = () => {
           <RefreshCw size={14} strokeWidth={1.5} className={loading ? 'animate-spin' : ''} />
         </button>
         
+        {currentPath && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+            title="Analyse d'espace"
+            onClick={() => setDiskAnalysisOpen(true)}
+          >
+            <BarChart2 size={14} strokeWidth={1.5} className="text-muted-foreground" />
+          </button>
+        )}
+
         <button
           className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
           title="Assistant IA"
@@ -1830,6 +1842,163 @@ const AiPermissionDialog = ({ action, onAllow, onAllowAlways, onDeny }) => {
   );
 };
 
+// ============ DISK ANALYSIS PANEL ============
+
+const DiskAnalysis = () => {
+  const { diskAnalysisOpen, setDiskAnalysisOpen } = useTheme();
+  const { currentPath } = useFileManager();
+
+  const [items,      setItems]      = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [loading,    setLoading]    = useState(false);
+  const [analyzed,   setAnalyzed]   = useState('');
+
+  useEffect(() => {
+    if (!diskAnalysisOpen || !currentPath) return;
+    setLoading(true);
+    setItems([]); setCategories([]); setAnalyzed('');
+    Promise.all([
+      invoke('get_subdirectory_sizes',     { path: currentPath }),
+      invoke('analyze_directory_categories', { path: currentPath }),
+    ]).then(([sizeData, catData]) => {
+      setItems(sizeData);
+      setCategories(catData);
+      setAnalyzed(currentPath);
+    }).catch(e => toast.error(String(e)))
+      .finally(() => setLoading(false));
+  }, [diskAnalysisOpen, currentPath]);
+
+  if (!diskAnalysisOpen) return null;
+
+  const totalSize  = items.reduce((s, i) => s + i.size, 0);
+  const fmt = (bytes) => {
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' Go';
+    if (bytes >= 1048576)    return (bytes / 1048576).toFixed(1)    + ' Mo';
+    if (bytes >= 1024)       return (bytes / 1024).toFixed(0)       + ' Ko';
+    return bytes + ' o';
+  };
+
+  const COLORS = ['#007AFF','#34C759','#FF9500','#AF52DE','#FF2D55','#32ADE6','#8E8E93','#FF6B35','#5AC8FA','#FFCC00'];
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" onClick={() => setDiskAnalysisOpen(false)}>
+      <div className="settings-panel w-[480px] h-full flex flex-col" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="relative z-10 flex-shrink-0 px-5 pt-5 pb-4 border-b border-white/10 dark:border-white/5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-primary/15 flex items-center justify-center">
+              <BarChart2 size={16} className="text-primary" />
+            </div>
+            <div>
+              <p className="text-[13px] font-semibold">Analyse d'espace</p>
+              <p className="text-[11px] text-muted-foreground truncate max-w-[280px]">
+                {analyzed ? analyzed.split(/[/\\]/).pop() : 'Chargement…'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setDiskAnalysisOpen(false)}
+            className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="relative z-10 flex-1 overflow-y-auto px-5 py-4 space-y-5">
+
+          {loading && (
+            <div className="flex flex-col items-center justify-center h-40 gap-3 text-muted-foreground">
+              <Loader2 size={24} className="animate-spin text-primary" />
+              <p className="text-[12px]">Calcul des tailles en cours…</p>
+            </div>
+          )}
+
+          {!loading && items.length > 0 && (
+            <>
+              {/* Total */}
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] text-muted-foreground">Taille totale</span>
+                <span className="text-[13px] font-semibold">{fmt(totalSize)}</span>
+              </div>
+
+              {/* Stacked bar */}
+              <div className="h-3 rounded-full overflow-hidden flex gap-px">
+                {items.slice(0, 10).map((item, i) => (
+                  <div key={item.path}
+                    style={{ width: `${(item.size / totalSize) * 100}%`, background: COLORS[i % COLORS.length] }}
+                    className="h-full"
+                    title={`${item.name} — ${fmt(item.size)}`}
+                  />
+                ))}
+              </div>
+
+              {/* Item list */}
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Contenu</p>
+                {items.map((item, i) => {
+                  const pct = totalSize > 0 ? (item.size / totalSize) * 100 : 0;
+                  return (
+                    <div key={item.path} className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                          style={{ background: COLORS[i % COLORS.length] }} />
+                        <span className="flex-1 text-[12px] truncate">{item.name}</span>
+                        <span className="text-[11px] text-muted-foreground flex-shrink-0">{fmt(item.size)}</span>
+                        <span className="text-[11px] text-muted-foreground/50 w-9 text-right flex-shrink-0">{pct.toFixed(0)}%</span>
+                      </div>
+                      <div className="h-1 bg-secondary rounded-full overflow-hidden ml-4">
+                        <div className="h-full rounded-full transition-all duration-500"
+                          style={{ width: `${pct}%`, background: COLORS[i % COLORS.length] }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Category breakdown */}
+              {categories.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-border">
+                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Par type de fichier</p>
+                  <div className="h-2.5 rounded-full overflow-hidden flex gap-px">
+                    {categories.map(c => (
+                      <div key={c.category}
+                        style={{ width: `${(c.size / categories.reduce((s, x) => s + x.size, 0)) * 100}%`, background: c.color }}
+                        className="h-full" title={`${c.category} — ${fmt(c.size)}`} />
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                    {categories.map(c => (
+                      <div key={c.category} className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                        <span className="text-[11px] flex-1 truncate">{c.category}</span>
+                        <span className="text-[11px] text-muted-foreground">{fmt(c.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {!loading && items.length === 0 && analyzed && (
+            <div className="flex flex-col items-center justify-center h-40 text-muted-foreground gap-2">
+              <HardDriveDownload size={28} strokeWidth={1} className="opacity-40" />
+              <p className="text-[12px]">Dossier vide</p>
+            </div>
+          )}
+
+          {!loading && !analyzed && !currentPath && (
+            <div className="flex flex-col items-center justify-center h-40 text-muted-foreground gap-2">
+              <BarChart2 size={28} strokeWidth={1} className="opacity-40" />
+              <p className="text-[12px]">Ouvre un dossier pour l'analyser</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ AI PANEL ============
 
 const AiPanel = () => {
@@ -2248,6 +2417,7 @@ const FileManagerApp = () => {
       </main>
       <QuickLook />
       <SettingsPanel />
+      <DiskAnalysis />
       <AiPanel />
       <Toaster position="bottom-right" richColors />
     </div>

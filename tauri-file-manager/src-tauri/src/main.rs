@@ -570,6 +570,53 @@ async fn get_user_directories() -> Result<Vec<FileItem>, String> {
     Ok(dirs)
 }
 
+// ── Disk analysis ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FolderSizeEntry {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub is_folder: bool,
+}
+
+fn recursive_dir_size(path: &Path) -> u64 {
+    walkdir::WalkDir::new(path)
+        .max_depth(12)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+#[tauri::command]
+async fn get_subdirectory_sizes(path: String) -> Result<Vec<FolderSizeEntry>, String> {
+    let base = PathBuf::from(&path);
+    if !base.is_dir() { return Err(format!("Chemin invalide : {}", path)); }
+
+    let mut items: Vec<FolderSizeEntry> = vec![];
+
+    for entry in fs::read_dir(&base).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        let Ok(meta) = entry.metadata() else { continue; };
+        let item_path = entry.path().to_string_lossy().to_string();
+
+        let (size, is_folder) = if meta.is_dir() {
+            (recursive_dir_size(&entry.path()), true)
+        } else {
+            (meta.len(), false)
+        };
+
+        items.push(FolderSizeEntry { name, path: item_path, size, is_folder });
+    }
+
+    items.sort_by(|a, b| b.size.cmp(&a.size));
+    Ok(items)
+}
+
 #[tauri::command]
 async fn get_disk_spaces() -> Result<Vec<DriveInfo>, String> {
     let disks = Disks::new_with_refreshed_list();
@@ -1156,6 +1203,7 @@ fn main() {
             get_onedrive_directories,
             get_disk_spaces,
             analyze_directory_categories,
+            get_subdirectory_sizes,
             open_file_with_default_app,
             check_ollama,
             ai_analyze,
