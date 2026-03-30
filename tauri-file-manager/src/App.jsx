@@ -213,6 +213,22 @@ const FileManagerProvider = ({ children }) => {
   const [clipboard, setClipboard] = useState({ files: [], action: null });
   const [navigationHistory, setNavigationHistory] = useState({ past: [], future: [] });
   const [showHidden, setShowHidden] = useState(false);
+  const [recentFolders, setRecentFolders] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('recentFolders') || '[]'); }
+    catch { return []; }
+  });
+
+  const addRecentFolder = useCallback((path) => {
+    if (!path) return;
+    const name = path.split(/[/\\]/).filter(Boolean).pop() || path;
+    setRecentFolders(prev => {
+      const filtered = prev.filter(f => f.path !== path);
+      const updated  = [{ name, path }, ...filtered].slice(0, 20);
+      localStorage.setItem('recentFolders', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
   const [pinnedFolders, setPinnedFolders] = useState(() => {
     try { return JSON.parse(localStorage.getItem('pinnedFolders') || '[]'); }
     catch { return []; }
@@ -284,7 +300,8 @@ const FileManagerProvider = ({ children }) => {
     setSelectedFiles([]);
     setSearchResults(null);
     setSearchQuery('');
-  }, [currentPath]);
+    if (path) addRecentFolder(path);
+  }, [currentPath, addRecentFolder]);
 
   // Navigation back/forward
   const goBack = useCallback(() => {
@@ -550,12 +567,13 @@ const FileManagerProvider = ({ children }) => {
     refresh: () => fetchFiles(currentPath),
     iconSize, setIconSize,
     pinnedFolders, pinFolder, unpinFolder,
+    recentFolders,
   }), [
     displayedFiles, files, currentPath, breadcrumbs, selectedFiles, view, userDirs,
     loading, searchQuery, searchResults, quickLookFile, clipboard, navigationHistory, showHidden,
     navigateToFolder, goBack, goForward, openItem, search, deleteFile, createFolder,
     renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs, iconSize,
-    pinnedFolders, pinFolder, unpinFolder,
+    pinnedFolders, pinFolder, unpinFolder, recentFolders,
   ]);
 
   return (
@@ -623,7 +641,7 @@ const SidebarItem = ({ icon: Icon, label, active, onClick, badge, onRemove }) =>
 // ============ SIDEBAR ============
 
 const Sidebar = () => {
-  const { userDirs, onedriveDirs, navigateToFolder, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
+  const { userDirs, onedriveDirs, navigateToFolder, currentPath, pinnedFolders, pinFolder, unpinFolder, recentFolders } = useFileManager();
 
   const canPin = currentPath && !pinnedFolders.some(f => f.path === currentPath);
 
@@ -686,6 +704,24 @@ const Sidebar = () => {
                 <SidebarItem
                   key={dir.path}
                   icon={Cloud}
+                  label={dir.name}
+                  active={currentPath === dir.path}
+                  onClick={() => navigateToFolder(dir.path)}
+                />
+              ))}
+            </SidebarSection>
+          </>
+        )}
+
+        {/* Récents */}
+        {recentFolders.length > 0 && (
+          <>
+            <div className="h-px bg-border mx-4 my-2" />
+            <SidebarSection title="Récents" defaultOpen={false}>
+              {recentFolders.slice(0, 10).map(dir => (
+                <SidebarItem
+                  key={dir.path}
+                  icon={FolderOpen}
                   label={dir.name}
                   active={currentPath === dir.path}
                   onClick={() => navigateToFolder(dir.path)}
