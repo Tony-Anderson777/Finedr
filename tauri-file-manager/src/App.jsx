@@ -211,6 +211,25 @@ const FileManagerProvider = ({ children }) => {
   const [clipboard, setClipboard] = useState({ files: [], action: null });
   const [navigationHistory, setNavigationHistory] = useState({ past: [], future: [] });
   const [showHidden, setShowHidden] = useState(false);
+  const [pinnedFolders, setPinnedFolders] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pinnedFolders') || '[]'); }
+    catch { return []; }
+  });
+
+  const pinFolder = useCallback((path) => {
+    if (!path || pinnedFolders.some(f => f.path === path)) return;
+    const name = path.split(/[/\\]/).filter(Boolean).pop() || path;
+    const updated = [...pinnedFolders, { name, path }];
+    setPinnedFolders(updated);
+    localStorage.setItem('pinnedFolders', JSON.stringify(updated));
+    toast.success(`«${name}» ajouté aux favoris`);
+  }, [pinnedFolders]);
+
+  const unpinFolder = useCallback((path) => {
+    const updated = pinnedFolders.filter(f => f.path !== path);
+    setPinnedFolders(updated);
+    localStorage.setItem('pinnedFolders', JSON.stringify(updated));
+  }, [pinnedFolders]);
 
   // Fetch files from Tauri backend
   const fetchFiles = useCallback(async (path = '') => {
@@ -528,11 +547,13 @@ const FileManagerProvider = ({ children }) => {
     pasteFiles,
     refresh: () => fetchFiles(currentPath),
     iconSize, setIconSize,
+    pinnedFolders, pinFolder, unpinFolder,
   }), [
     displayedFiles, files, currentPath, breadcrumbs, selectedFiles, view, userDirs,
     loading, searchQuery, searchResults, quickLookFile, clipboard, navigationHistory, showHidden,
     navigateToFolder, goBack, goForward, openItem, search, deleteFile, createFolder,
     renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs, iconSize,
+    pinnedFolders, pinFolder, unpinFolder,
   ]);
 
   return (
@@ -544,21 +565,24 @@ const FileManagerProvider = ({ children }) => {
 
 // ============ SIDEBAR SECTION ============
 
-const SidebarSection = ({ title, children, defaultOpen = true }) => {
+const SidebarSection = ({ title, children, defaultOpen = true, action }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
-  
+
   return (
     <div className="mb-1">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1 px-4 py-1.5 w-full text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
-      >
-        <ChevronRight 
-          size={12} 
-          className={cn('transition-transform duration-200', isOpen && 'rotate-90')}
-        />
-        {title}
-      </button>
+      <div className="flex items-center pr-2">
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex items-center gap-1 px-4 py-1.5 flex-1 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
+        >
+          <ChevronRight
+            size={12}
+            className={cn('transition-transform duration-200', isOpen && 'rotate-90')}
+          />
+          {title}
+        </button>
+        {action}
+      </div>
       {isOpen && (
         <div className="animate-fade-in">
           {children}
@@ -570,31 +594,44 @@ const SidebarSection = ({ title, children, defaultOpen = true }) => {
 
 // ============ SIDEBAR ITEM ============
 
-const SidebarItem = ({ icon: Icon, label, active, onClick, badge }) => (
-  <button
-    onClick={onClick}
-    className={cn('sidebar-item w-full', active && 'sidebar-item-active')}
-  >
-    {Icon && <Icon size={16} strokeWidth={1.5} className={active ? 'text-primary' : 'text-muted-foreground'} />}
-    <span className="flex-1 truncate">{label}</span>
-    {badge !== undefined && (
-      <span className="text-[11px] text-muted-foreground">{badge}</span>
+const SidebarItem = ({ icon: Icon, label, active, onClick, badge, onRemove }) => (
+  <div className="group relative flex items-center">
+    <button
+      onClick={onClick}
+      className={cn('sidebar-item flex-1 min-w-0', active && 'sidebar-item-active', onRemove && 'pr-7')}
+    >
+      {Icon && <Icon size={16} strokeWidth={1.5} className={active ? 'text-primary' : 'text-muted-foreground'} />}
+      <span className="flex-1 truncate">{label}</span>
+      {badge !== undefined && (
+        <span className="text-[11px] text-muted-foreground">{badge}</span>
+      )}
+    </button>
+    {onRemove && (
+      <button
+        onClick={(e) => { e.stopPropagation(); onRemove(); }}
+        title="Retirer des favoris"
+        className="absolute right-2 opacity-0 group-hover:opacity-100 w-4 h-4 rounded flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+      >
+        <X size={10} />
+      </button>
     )}
-  </button>
+  </div>
 );
 
 // ============ SIDEBAR ============
 
 const Sidebar = () => {
-  const { userDirs, onedriveDirs, navigateToFolder, currentPath } = useFileManager();
+  const { userDirs, onedriveDirs, navigateToFolder, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
+
+  const canPin = currentPath && !pinnedFolders.some(f => f.path === currentPath);
 
   return (
     <aside className="glass-sidebar w-[220px] flex-shrink-0 h-full flex flex-col">
       <div className="flex-1 py-2 overflow-y-auto scrollbar-thin">
 
-        {/* Favoris — dossiers locaux */}
+        {/* Favoris — dossiers système */}
         {userDirs.length > 0 && (
-          <SidebarSection title="Favoris">
+          <SidebarSection title="Raccourcis">
             {userDirs.map((dir) => (
               <SidebarItem
                 key={dir.path}
@@ -606,6 +643,37 @@ const Sidebar = () => {
             ))}
           </SidebarSection>
         )}
+
+        {/* Favoris épinglés */}
+        <SidebarSection
+          title="Favoris"
+          action={canPin && (
+            <button
+              onClick={() => pinFolder(currentPath)}
+              title="Épingler ce dossier"
+              className="w-5 h-5 flex items-center justify-center rounded hover:bg-secondary text-muted-foreground hover:text-primary transition-colors"
+            >
+              <Plus size={11} />
+            </button>
+          )}
+        >
+          {pinnedFolders.length === 0 ? (
+            <p className="px-5 py-1.5 text-[11px] text-muted-foreground/50 italic">
+              Navigue vers un dossier puis clique + pour l'épingler
+            </p>
+          ) : (
+            pinnedFolders.map((dir) => (
+              <SidebarItem
+                key={dir.path}
+                icon={Star}
+                label={dir.name}
+                active={currentPath === dir.path}
+                onClick={() => navigateToFolder(dir.path)}
+                onRemove={() => unpinFolder(dir.path)}
+              />
+            ))
+          )}
+        </SidebarSection>
 
         {/* OneDrive */}
         {onedriveDirs.length > 0 && (
@@ -648,11 +716,7 @@ const Sidebar = () => {
 
       {/* Corbeille */}
       <div className="border-t border-border p-2">
-        <SidebarItem
-          icon={Trash2}
-          label="Corbeille"
-          onClick={() => {}}
-        />
+        <SidebarItem icon={Trash2} label="Corbeille" onClick={() => {}} />
       </div>
     </aside>
   );
@@ -765,8 +829,9 @@ const Breadcrumb = () => {
 // ============ TOP BAR ============
 
 const TopBar = () => {
-  const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading } = useFileManager();
+  const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
   const { setSettingsOpen, setAiPanelOpen } = useTheme();
+  const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
   
   const handleSearchChange = (e) => {
     const value = e.target.value;
@@ -825,7 +890,19 @@ const TopBar = () => {
         <ViewSwitcher />
         
         <div className="w-px h-5 bg-border" />
-        
+
+        {currentPath && (
+          <button
+            onClick={() => isPinned ? unpinFolder(currentPath) : pinFolder(currentPath)}
+            title={isPinned ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+          >
+            <Star size={14} strokeWidth={1.5} className={isPinned ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground'} />
+          </button>
+        )}
+
+        <div className="w-px h-5 bg-border" />
+
         <ThemeToggle />
         
         <button
