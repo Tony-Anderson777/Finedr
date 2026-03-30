@@ -1367,24 +1367,227 @@ const ContentArea = () => {
   );
 };
 
+// ============ BATCH RENAME MODAL ============
+
+const BatchRenameModal = ({ files, onClose }) => {
+  const { refresh } = useFileManager();
+  const [mode,     setMode]     = useState('sequence');   // 'sequence' | 'prefix_suffix' | 'find_replace'
+  const [pattern,  setPattern]  = useState('{name}_{001}');
+  const [prefix,   setPrefix]   = useState('');
+  const [suffix,   setSuffix]   = useState('');
+  const [find,     setFind]     = useState('');
+  const [replace,  setReplace]  = useState('');
+  const [startNum, setStartNum] = useState(1);
+  const [applying, setApplying] = useState(false);
+
+  const preview = useMemo(() => {
+    return files.map((file, i) => {
+      const extRaw = file.extension ? `.${file.extension}` : '';
+      const nameNoExt = file.extension
+        ? file.name.slice(0, file.name.length - extRaw.length)
+        : file.name;
+
+      let newName;
+      if (mode === 'sequence') {
+        const num = String(startNum + i);
+        // Detect padding from pattern (e.g. {001} → 3 digits)
+        const padMatch = pattern.match(/\{(0+)\}/);
+        const padded   = padMatch ? num.padStart(padMatch[1].length, '0') : num;
+        newName = pattern
+          .replace(/\{0+\}/g, padded)
+          .replace(/\{n\}/g,   String(startNum + i))
+          .replace(/\{name\}/g, nameNoExt)
+          .replace(/\{ext\}/g,  file.extension || '')
+          .replace(/\{date\}/g, new Date().toISOString().slice(0, 10));
+        if (!pattern.includes('{ext}')) newName += extRaw;
+      } else if (mode === 'prefix_suffix') {
+        newName = prefix + nameNoExt + suffix + extRaw;
+      } else {
+        newName = (find ? nameNoExt.replaceAll(find, replace) : nameNoExt) + extRaw;
+      }
+      return { original: file.name, newName, path: file.path, changed: newName !== file.name };
+    });
+  }, [files, mode, pattern, prefix, suffix, find, replace, startNum]);
+
+  const apply = async () => {
+    setApplying(true);
+    let ok = 0;
+    for (const item of preview.filter(p => p.changed)) {
+      try {
+        await invoke('rename_file', { path: item.path, newName: item.newName });
+        ok++;
+      } catch (e) {
+        toast.error(`${item.original} : ${e}`);
+      }
+    }
+    if (ok) toast.success(`${ok} fichier${ok > 1 ? 's' : ''} renommé${ok > 1 ? 's' : ''}`);
+    setApplying(false);
+    refresh();
+    onClose();
+  };
+
+  const MODES = [
+    { id: 'sequence',      label: 'Numérotation' },
+    { id: 'prefix_suffix', label: 'Préfixe / Suffixe' },
+    { id: 'find_replace',  label: 'Rechercher / Remplacer' },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-background border border-border rounded-2xl shadow-2xl w-full max-w-[560px] max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-border flex-shrink-0">
+          <div>
+            <p className="text-[14px] font-semibold">Renommer en lot</p>
+            <p className="text-[11px] text-muted-foreground">{files.length} fichier{files.length > 1 ? 's' : ''} sélectionné{files.length > 1 ? 's' : ''}</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-secondary transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Mode tabs */}
+        <div className="px-5 pt-4 flex-shrink-0">
+          <div className="flex gap-1 p-0.5 bg-secondary/60 rounded-lg">
+            {MODES.map(m => (
+              <button key={m.id} onClick={() => setMode(m.id)}
+                className={cn('flex-1 py-1.5 rounded-md text-[11px] font-medium transition-all',
+                  mode === m.id ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Options */}
+        <div className="px-5 pt-4 pb-3 flex-shrink-0 space-y-3">
+          {mode === 'sequence' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Modèle</label>
+                <input value={pattern} onChange={e => setPattern(e.target.value)}
+                  className="w-full px-3 py-1.5 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary"
+                  placeholder="{name}_{001}" />
+                <p className="text-[10px] text-muted-foreground/60">Variables : {'{name}'} {'{001}'} {'{date}'} {'{ext}'}</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Début à</label>
+                <input type="number" min={0} value={startNum} onChange={e => setStartNum(Number(e.target.value))}
+                  className="w-full px-3 py-1.5 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary" />
+              </div>
+            </div>
+          )}
+          {mode === 'prefix_suffix' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Préfixe</label>
+                <input value={prefix} onChange={e => setPrefix(e.target.value)}
+                  className="w-full px-3 py-1.5 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary"
+                  placeholder="ex: 2024_" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Suffixe (avant l'extension)</label>
+                <input value={suffix} onChange={e => setSuffix(e.target.value)}
+                  className="w-full px-3 py-1.5 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary"
+                  placeholder="ex: _final" />
+              </div>
+            </div>
+          )}
+          {mode === 'find_replace' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Rechercher</label>
+                <input value={find} onChange={e => setFind(e.target.value)}
+                  className="w-full px-3 py-1.5 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary"
+                  placeholder="texte à trouver" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Remplacer par</label>
+                <input value={replace} onChange={e => setReplace(e.target.value)}
+                  className="w-full px-3 py-1.5 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary"
+                  placeholder="(vide = supprimer)" />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Preview */}
+        <div className="flex-1 overflow-y-auto px-5 pb-4 min-h-0">
+          <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">Aperçu</p>
+          <div className="space-y-1">
+            {preview.map((item, i) => (
+              <div key={i} className={cn('flex items-center gap-2 text-[11px] py-1 px-2 rounded-lg',
+                item.changed ? 'bg-primary/5' : 'opacity-50')}>
+                <span className="flex-1 truncate text-muted-foreground">{item.original}</span>
+                {item.changed && <>
+                  <ChevronRight size={10} className="flex-shrink-0 text-muted-foreground/40" />
+                  <span className="flex-1 truncate font-medium text-primary">{item.newName}</span>
+                </>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-4 border-t border-border flex items-center justify-between flex-shrink-0">
+          <span className="text-[11px] text-muted-foreground">
+            {preview.filter(p => p.changed).length} renommage{preview.filter(p => p.changed).length > 1 ? 's' : ''} à effectuer
+          </span>
+          <div className="flex gap-2">
+            <button onClick={onClose}
+              className="px-4 py-1.5 text-[12px] rounded-lg border border-border hover:bg-secondary transition-colors">
+              Annuler
+            </button>
+            <button onClick={apply} disabled={applying || preview.filter(p => p.changed).length === 0}
+              className="px-4 py-1.5 text-[12px] rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-1.5">
+              {applying ? <><Loader2 size={12} className="animate-spin"/>En cours…</> : 'Appliquer'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ STATUS BAR ============
 
 const StatusBar = () => {
   const { files, selectedFiles, searchResults } = useFileManager();
-  
-  const displayFiles = searchResults !== null ? searchResults : files;
-  const itemCount = displayFiles.length;
+  const [batchRenameOpen, setBatchRenameOpen] = useState(false);
+
+  const displayFiles  = searchResults !== null ? searchResults : files;
+  const itemCount     = displayFiles.length;
   const selectedCount = selectedFiles.length;
-  
+  const selectedFileObjs = files.filter(f => selectedFiles.includes(f.path));
+
   return (
-    <footer className="h-[28px] flex-shrink-0 border-t border-border flex items-center justify-between px-4 text-[11px] text-muted-foreground bg-background">
-      <div className="flex items-center gap-4">
-        <span>{itemCount} élément{itemCount !== 1 ? 's' : ''}</span>
-        {selectedCount > 0 && (
-          <span>{selectedCount} sélectionné{selectedCount !== 1 ? 's' : ''}</span>
+    <>
+      <footer className="h-[28px] flex-shrink-0 border-t border-border flex items-center justify-between px-4 text-[11px] text-muted-foreground bg-background">
+        <div className="flex items-center gap-4">
+          <span>{itemCount} élément{itemCount !== 1 ? 's' : ''}</span>
+          {selectedCount > 0 && (
+            <span>{selectedCount} sélectionné{selectedCount !== 1 ? 's' : ''}</span>
+          )}
+        </div>
+        {selectedCount >= 2 && (
+          <button
+            onClick={() => setBatchRenameOpen(true)}
+            className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-secondary transition-colors text-primary"
+          >
+            <Edit3 size={10} />
+            Renommer en lot ({selectedCount})
+          </button>
         )}
-      </div>
-    </footer>
+      </footer>
+      {batchRenameOpen && (
+        <BatchRenameModal
+          files={selectedFileObjs}
+          onClose={() => setBatchRenameOpen(false)}
+        />
+      )}
+    </>
   );
 };
 
