@@ -570,6 +570,83 @@ async fn get_user_directories() -> Result<Vec<FileItem>, String> {
     Ok(dirs)
 }
 
+// ── ZIP / Extract ─────────────────────────────────────────────────────────────
+
+/// Compress a list of paths into a ZIP archive at `dest_path`.
+#[tauri::command]
+async fn zip_items(paths: Vec<String>, dest_path: String) -> Result<String, String> {
+    use zip::write::{FileOptions, ZipWriter};
+    use zip::CompressionMethod;
+    use std::io::{Read, Write};
+
+    let dest = PathBuf::from(&dest_path);
+    let file = std::fs::File::create(&dest).map_err(|e| format!("Impossible de créer le ZIP : {}", e))?;
+    let mut zip = ZipWriter::new(file);
+
+    let options: FileOptions<()> = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+
+    for path_str in &paths {
+        let src = PathBuf::from(path_str);
+        if src.is_file() {
+            let name = src.file_name().map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".to_string());
+            zip.start_file(&name, options).map_err(|e| e.to_string())?;
+            let mut f = std::fs::File::open(&src).map_err(|e| e.to_string())?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            zip.write_all(&buf).map_err(|e| e.to_string())?;
+        } else if src.is_dir() {
+            let dir_name = src.file_name().map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "folder".to_string());
+            for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|e| e.ok()) {
+                let relative = entry.path().strip_prefix(&src).map_err(|e| e.to_string())?;
+                let zip_path = format!("{}/{}", dir_name, relative.to_string_lossy().replace('\\', "/"));
+                if entry.file_type().is_file() {
+                    zip.start_file(&zip_path, options).map_err(|e| e.to_string())?;
+                    let mut f = std::fs::File::open(entry.path()).map_err(|e| e.to_string())?;
+                    let mut buf = Vec::new();
+                    f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                    zip.write_all(&buf).map_err(|e| e.to_string())?;
+                } else if !relative.as_os_str().is_empty() {
+                    zip.add_directory(&zip_path, options).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+
+    zip.finish().map_err(|e| format!("Finalisation ZIP : {}", e))?;
+    Ok(format!("Archive créée : {}", dest_path))
+}
+
+/// Extract a ZIP archive into a destination folder.
+#[tauri::command]
+async fn extract_zip(zip_path: String, dest_dir: String) -> Result<String, String> {
+    use zip::ZipArchive;
+
+    let file = std::fs::File::open(&zip_path).map_err(|e| format!("Impossible d'ouvrir le ZIP : {}", e))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let dest = PathBuf::from(&dest_dir);
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let out_path = dest.join(entry.name());
+
+        if entry.name().ends_with('/') {
+            fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut out_file = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(format!("{} fichier(s) extrait(s) dans {}", archive.len(), dest_dir))
+}
+
 // ── Disk analysis ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1204,6 +1281,8 @@ fn main() {
             get_disk_spaces,
             analyze_directory_categories,
             get_subdirectory_sizes,
+            zip_items,
+            extract_zip,
             open_file_with_default_app,
             check_ollama,
             ai_analyze,

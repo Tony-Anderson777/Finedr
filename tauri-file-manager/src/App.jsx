@@ -16,7 +16,8 @@ import {
   Sun, Moon, Plus, X, RefreshCw,
   Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud,
   Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
-  ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload
+  ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload,
+  PackagePlus, PackageOpen
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -986,8 +987,32 @@ const TopBar = () => {
 // ============ FILE ITEM (ICON VIEW) ============
 
 const FileItemIcon = ({ file }) => {
-  const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile, iconSize } = useFileManager();
+  const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile, iconSize, currentPath, refresh } = useFileManager();
   const { showFileSizes } = useTheme();
+
+  const handleZip = async () => {
+    setShowContextMenu(false);
+    const targets = selectedFiles.includes(file.path) ? selectedFiles : [file.path];
+    const destName = targets.length === 1
+      ? file.name.replace(/\.[^.]+$/, '') + '.zip'
+      : 'archive.zip';
+    const destPath = `${currentPath}\\${destName}`;
+    try {
+      await invoke('zip_items', { paths: targets, destPath });
+      toast.success(`Archive créée : ${destName}`);
+      refresh();
+    } catch (e) { toast.error(String(e)); }
+  };
+
+  const handleExtract = async () => {
+    setShowContextMenu(false);
+    const destDir = currentPath;
+    try {
+      const msg = await invoke('extract_zip', { zipPath: file.path, destDir });
+      toast.success(msg);
+      refresh();
+    } catch (e) { toast.error(String(e)); }
+  };
   const isSelected = selectedFiles.includes(file.path);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 });
@@ -1092,7 +1117,23 @@ const FileItemIcon = ({ file }) => {
             >
               <Edit3 size={14} /> Renommer
             </button>
-            <button 
+            <div className="h-px bg-border my-1" />
+            <button
+              className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2"
+              onClick={handleZip}
+            >
+              <PackagePlus size={14} /> Compresser en ZIP
+            </button>
+            {file.extension === 'zip' && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2"
+                onClick={handleExtract}
+              >
+                <PackageOpen size={14} /> Extraire ici
+              </button>
+            )}
+            <div className="h-px bg-border my-1" />
+            <button
               className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2 text-destructive"
               onClick={() => { deleteFile(file.path, false); setShowContextMenu(false); }}
             >
