@@ -140,8 +140,9 @@ const ThemeProvider = ({ children }) => {
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#007AFF');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showFileSizes, setShowFileSizes] = useState(() => localStorage.getItem('showFileSizes') !== 'false');
-  const [aiPanelOpen, setAiPanelOpen]       = useState(false);
+  const [aiPanelOpen, setAiPanelOpen]           = useState(false);
   const [diskAnalysisOpen, setDiskAnalysisOpen] = useState(false);
+  const [splitMode, setSplitMode]               = useState(false);
   const [aiProvider,  setAiProvider]    = useState(() => localStorage.getItem('aiProvider')  || 'claude');
   const [claudeKey,   setClaudeKey]     = useState(() => localStorage.getItem('claudeKey')   || '');
   const [ollamaModel, setOllamaModel]   = useState(() => localStorage.getItem('ollamaModel') || 'llama3.2');
@@ -187,6 +188,7 @@ const ThemeProvider = ({ children }) => {
       showFileSizes, setShowFileSizes,
       aiPanelOpen, setAiPanelOpen,
       diskAnalysisOpen, setDiskAnalysisOpen,
+      splitMode, setSplitMode,
       aiProvider, setAiProvider,
       claudeKey, setClaudeKey,
       ollamaModel, setOllamaModel,
@@ -869,7 +871,7 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
-  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode } = useTheme();
   const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
   
   const handleSearchChange = (e) => {
@@ -962,6 +964,15 @@ const TopBar = () => {
             <BarChart2 size={14} strokeWidth={1.5} className="text-muted-foreground" />
           </button>
         )}
+
+        <button
+          onClick={() => setSplitMode(v => !v)}
+          title={splitMode ? 'Vue simple' : 'Vue double panneau'}
+          className={cn('h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors',
+            splitMode && 'bg-primary/10 text-primary')}
+        >
+          <Columns size={14} strokeWidth={1.5} className={splitMode ? 'text-primary' : 'text-muted-foreground'} />
+        </button>
 
         <button
           className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
@@ -1394,6 +1405,158 @@ const GalleryView = () => {
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+};
+
+// ============ SECOND PANE (split view) ============
+
+const SecondPane = () => {
+  const { selectedFiles: mainSelected, files: mainFiles, copyFiles, pasteFiles, currentPath: mainPath, refresh: mainRefresh } = useFileManager();
+  const [path,     setPath]     = useState('');
+  const [files,    setFiles]    = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [breadcrumbs, setBreadcrumbs] = useState([]);
+
+  const navigate = useCallback(async (newPath) => {
+    setLoading(true);
+    try {
+      const [result, bc] = await Promise.all([
+        invoke('list_files', { path: newPath, showHidden: false }),
+        invoke('get_breadcrumbs', { path: newPath }),
+      ]);
+      setFiles(result);
+      setBreadcrumbs(bc);
+      setPath(newPath);
+    } catch (e) { toast.error(String(e)); }
+    finally { setLoading(false); }
+  }, []);
+
+  const copyToHere = async () => {
+    if (!path || mainSelected.length === 0) return;
+    for (const src of mainSelected) {
+      const name = src.split(/[/\\]/).pop();
+      try {
+        await invoke('copy_file', { src, dest: `${path}\\${name}` });
+      } catch (e) { toast.error(String(e)); }
+    }
+    toast.success(`${mainSelected.length} fichier(s) copié(s)`);
+    navigate(path);
+  };
+
+  const moveToHere = async () => {
+    if (!path || mainSelected.length === 0) return;
+    for (const src of mainSelected) {
+      const name = src.split(/[/\\]/).pop();
+      try {
+        await invoke('move_file', { src, dest: `${path}\\${name}` });
+      } catch (e) { toast.error(String(e)); }
+    }
+    toast.success(`${mainSelected.length} fichier(s) déplacé(s)`);
+    navigate(path);
+    mainRefresh();
+  };
+
+  const getFileIcon = (file) => {
+    if (file.file_type === 'Folder') return <Folder size={14} className="text-primary flex-shrink-0" />;
+    const ext = file.extension?.toLowerCase() || '';
+    if (['jpg','jpeg','png','gif','webp','svg','bmp'].includes(ext)) return <FileImage size={14} className="text-orange-400 flex-shrink-0" />;
+    if (['mp4','mov','avi','mkv','webm'].includes(ext)) return <FileVideo size={14} className="text-purple-400 flex-shrink-0" />;
+    if (['mp3','wav','flac','aac'].includes(ext)) return <FileAudio size={14} className="text-pink-400 flex-shrink-0" />;
+    if (['pdf','doc','docx','xls','xlsx','ppt','pptx','txt'].includes(ext)) return <FileText size={14} className="text-blue-400 flex-shrink-0" />;
+    if (['zip','rar','7z','tar','gz'].includes(ext)) return <FileArchive size={14} className="text-yellow-500 flex-shrink-0" />;
+    return <File size={14} className="text-muted-foreground flex-shrink-0" />;
+  };
+
+  const fmt = (bytes) => {
+    if (!bytes) return '';
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' Go';
+    if (bytes >= 1048576)    return (bytes / 1048576).toFixed(1)    + ' Mo';
+    if (bytes >= 1024)       return (bytes / 1024).toFixed(0)       + ' Ko';
+    return bytes + ' o';
+  };
+
+  return (
+    <div className="flex-1 flex flex-col min-w-0 border-l border-border bg-background/50">
+      {/* Pane header */}
+      <div className="h-[36px] flex-shrink-0 flex items-center gap-1 px-2 border-b border-border bg-secondary/20">
+        <button onClick={() => navigate('')} title="Ce PC"
+          className="h-6 w-6 flex items-center justify-center rounded hover:bg-secondary transition-colors">
+          <Monitor size={13} className="text-muted-foreground" />
+        </button>
+        {breadcrumbs.length > 0 ? (
+          <div className="flex items-center gap-0.5 overflow-hidden">
+            {breadcrumbs.map((bc, i) => (
+              <React.Fragment key={bc.path}>
+                {i > 0 && <ChevronRight size={10} className="text-muted-foreground/40 flex-shrink-0" />}
+                <button onClick={() => navigate(bc.path)}
+                  className="text-[11px] px-1 py-0.5 rounded hover:bg-secondary transition-colors truncate max-w-[100px]">
+                  {bc.name}
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted-foreground px-1">Ce PC</span>
+        )}
+        <button onClick={() => navigate(path)} className="ml-auto h-6 w-6 flex items-center justify-center rounded hover:bg-secondary transition-colors">
+          <RefreshCw size={11} className="text-muted-foreground" />
+        </button>
+      </div>
+
+      {/* Cross-pane actions (shown when main pane has selections) */}
+      {mainSelected.length > 0 && path && (
+        <div className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-primary/5 border-b border-primary/15">
+          <span className="text-[11px] text-muted-foreground flex-1">{mainSelected.length} sélectionné(s) dans le panneau gauche</span>
+          <button onClick={copyToHere}
+            className="text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center gap-1">
+            <Copy size={10} /> Copier ici
+          </button>
+          <button onClick={moveToHere}
+            className="text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center gap-1">
+            <Scissors size={10} /> Déplacer ici
+          </button>
+        </div>
+      )}
+
+      {/* File list */}
+      <div className="flex-1 overflow-y-auto">
+        {loading ? (
+          <div className="flex items-center justify-center h-20">
+            <RefreshCw size={18} className="animate-spin text-muted-foreground" />
+          </div>
+        ) : files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-32 text-muted-foreground gap-2">
+            {path ? <><Folder size={28} strokeWidth={1} className="opacity-40" /><p className="text-[11px]">Dossier vide</p></>
+                  : <><Monitor size={28} strokeWidth={1} className="opacity-40" /><p className="text-[11px]">Double-cliquez un dossier pour naviguer</p></>}
+          </div>
+        ) : (
+          <div className="py-1">
+            {files.map(file => (
+              <button key={file.path}
+                onDoubleClick={() => { if (file.file_type === 'Folder') navigate(file.path); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-secondary/50 transition-colors text-left group">
+                {getFileIcon(file)}
+                <span className="flex-1 text-[12px] truncate">{file.name}</span>
+                {file.file_type !== 'Folder' && (
+                  <span className="text-[10px] text-muted-foreground/50 flex-shrink-0 group-hover:opacity-100">
+                    {fmt(file.size)}
+                  </span>
+                )}
+                {file.file_type === 'Folder' && (
+                  <ChevronRight size={10} className="text-muted-foreground/30 flex-shrink-0" />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="h-[24px] flex-shrink-0 border-t border-border flex items-center px-3 text-[10px] text-muted-foreground">
+        {files.length} élément{files.length !== 1 ? 's' : ''}
+        {path && <span className="ml-auto truncate max-w-[60%]">{path.split(/[/\\]/).pop()}</span>}
       </div>
     </div>
   );
@@ -2687,12 +2850,19 @@ const AiPanel = () => {
 // ============ MAIN APP ============
 
 const FileManagerApp = () => {
+  const { splitMode } = useTheme();
+
   return (
     <div className="flex h-screen w-screen overflow-hidden text-[13px] select-none bg-background">
       <Sidebar />
       <main className="flex-1 flex flex-col min-w-0">
         <TopBar />
-        <ContentArea />
+        <div className="flex-1 flex overflow-hidden min-h-0">
+          <div className={cn('flex flex-col min-w-0', splitMode ? 'flex-1' : 'flex-1')}>
+            <ContentArea />
+          </div>
+          {splitMode && <SecondPane />}
+        </div>
         <StatusBar />
       </main>
       <QuickLook />
