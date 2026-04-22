@@ -1017,26 +1017,107 @@ const ThemeToggle = () => {
 // ============ BREADCRUMB ============
 
 const Breadcrumb = () => {
-  const { breadcrumbs, navigateToFolder } = useFileManager();
-  
+  const { breadcrumbs, navigateToFolder, currentPath } = useFileManager();
+  const [pathMode, setPathMode] = useState(false);
+  const [pathInput, setPathInput] = useState('');
+  const [copied, setCopied] = useState(false);
+  const inputRef = useRef(null);
+
+  const enterPathMode = () => {
+    setPathInput(currentPath || '');
+    setPathMode(true);
+    // autofocus + select all on next tick
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, 0);
+  };
+
+  const exitPathMode = () => setPathMode(false);
+
+  const commitPath = () => {
+    const p = pathInput.trim();
+    if (p) navigateToFolder(p);
+    exitPathMode();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commitPath(); }
+    if (e.key === 'Escape') { e.preventDefault(); exitPathMode(); }
+  };
+
+  const copyPath = async (e) => {
+    e.stopPropagation();
+    if (!currentPath) return;
+    await navigator.clipboard.writeText(currentPath);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  if (pathMode) {
+    return (
+      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+        <input
+          ref={inputRef}
+          value={pathInput}
+          onChange={e => setPathInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={exitPathMode}
+          spellCheck={false}
+          className="flex-1 h-7 px-3 text-[12px] font-mono bg-background border border-primary rounded-md focus:outline-none focus:ring-2 focus:ring-primary/40 min-w-0"
+          placeholder="Colle ou tape un chemin puis appuie sur Entrée…"
+        />
+        <button
+          onMouseDown={e => { e.preventDefault(); commitPath(); }}
+          className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-[11px] font-semibold flex-shrink-0 hover:opacity-90 transition-opacity"
+        >
+          Aller
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <nav className="flex items-center gap-1 text-[13px] min-w-0 flex-1">
-      {breadcrumbs.map((crumb, index) => (
-        <React.Fragment key={crumb.id || 'root'}>
-          {index > 0 && (
-            <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
-          )}
-          <button
-            onClick={() => navigateToFolder(crumb.path)}
-            className={cn(
-              'truncate max-w-[150px]',
-              index === breadcrumbs.length - 1 ? 'breadcrumb-item-current' : 'breadcrumb-item'
+    <nav className="group flex items-center gap-1 text-[13px] min-w-0 flex-1">
+      {/* Clickable breadcrumb area */}
+      <div
+        className="flex items-center gap-1 flex-1 min-w-0 cursor-text rounded-md px-1 py-0.5 hover:bg-secondary/50 transition-colors"
+        onClick={enterPathMode}
+        title="Cliquer pour modifier le chemin"
+      >
+        {breadcrumbs.map((crumb, index) => (
+          <React.Fragment key={crumb.id || 'root'}>
+            {index > 0 && (
+              <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
             )}
-          >
-            {crumb.name}
-          </button>
-        </React.Fragment>
-      ))}
+            <button
+              onClick={(e) => { e.stopPropagation(); navigateToFolder(crumb.path); }}
+              className={cn(
+                'truncate max-w-[150px]',
+                index === breadcrumbs.length - 1 ? 'breadcrumb-item-current' : 'breadcrumb-item'
+              )}
+            >
+              {crumb.name}
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Copy button — appears on hover */}
+      {currentPath && (
+        <button
+          onClick={copyPath}
+          title="Copier le chemin"
+          className="opacity-0 group-hover:opacity-100 transition-all h-6 w-6 flex items-center justify-center rounded hover:bg-secondary flex-shrink-0"
+        >
+          {copied
+            ? <Check size={12} className="text-green-500" />
+            : <Copy size={12} className="text-muted-foreground" />
+          }
+        </button>
+      )}
     </nav>
   );
 };
