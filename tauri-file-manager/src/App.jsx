@@ -22,7 +22,8 @@ import {
   Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
   ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload,
   PackagePlus, PackageOpen, GitBranch, Trash, AlertTriangle, Clock, HardDrive as HardDriveIcon,
-  Tag, Tags, Palette, Check
+  Tag, Tags, Palette, Check,
+  ArrowLeftRight, SlidersHorizontal
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -140,6 +141,35 @@ const ThemeProvider = ({ children }) => {
   const [iconTint, setIconTintState] = useState(() => localStorage.getItem('iconTint') || 'default');
   const [treeViewOpen, setTreeViewOpen] = useState(false);
   const [treeViewPath, setTreeViewPath] = useState('');
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+
+  // ── Toolbar config ────────────────────────────────────────────────────────
+  const TOOLBAR_BUTTONS = [
+    { id: 'star',     label: 'Favoris',           icon: Star },
+    { id: 'theme',    label: 'Thème',              icon: Sun },
+    { id: 'refresh',  label: 'Actualiser',         icon: RefreshCw },
+    { id: 'disk',     label: 'Analyse d\'espace',  icon: BarChart2 },
+    { id: 'sync',     label: 'Synchronisation',    icon: ArrowLeftRight },
+    { id: 'split',    label: 'Vue double',          icon: Columns },
+    { id: 'ai',       label: 'Assistant IA',       icon: Sparkles },
+    { id: 'settings', label: 'Préférences',        icon: Settings },
+  ];
+  const loadToolbar = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('finedr_toolbar') || 'null');
+      if (saved) return saved;
+    } catch {}
+    return Object.fromEntries(TOOLBAR_BUTTONS.map(b => [b.id, true]));
+  };
+  const [toolbarConfig, setToolbarConfigState] = useState(loadToolbar);
+  const setToolbarConfig = (next) => {
+    setToolbarConfigState(next);
+    localStorage.setItem('finedr_toolbar', JSON.stringify(next));
+  };
+  const toggleToolbarButton = (id) => {
+    const next = { ...toolbarConfig, [id]: !toolbarConfig[id] };
+    setToolbarConfig(next);
+  };
 
   // ── Tags ──────────────────────────────────────────────────────────────────
   const loadTagsFromStorage = () => {
@@ -248,6 +278,8 @@ const ThemeProvider = ({ children }) => {
       accentColor, setAccentColor,
       iconTint, setIconTint, ICON_TINTS,
       treeViewOpen, setTreeViewOpen, treeViewPath, setTreeViewPath,
+      syncPanelOpen, setSyncPanelOpen,
+      toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS,
       tagData, createTag, deleteTag, toggleFileTag, getFileTags, activeTagFilter, setActiveTagFilter,
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
@@ -985,26 +1017,107 @@ const ThemeToggle = () => {
 // ============ BREADCRUMB ============
 
 const Breadcrumb = () => {
-  const { breadcrumbs, navigateToFolder } = useFileManager();
-  
+  const { breadcrumbs, navigateToFolder, currentPath } = useFileManager();
+  const [pathMode, setPathMode] = useState(false);
+  const [pathInput, setPathInput] = useState('');
+  const [copied, setCopied] = useState(false);
+  const inputRef = useRef(null);
+
+  const enterPathMode = () => {
+    setPathInput(currentPath || '');
+    setPathMode(true);
+    // autofocus + select all on next tick
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.select();
+      }
+    }, 0);
+  };
+
+  const exitPathMode = () => setPathMode(false);
+
+  const commitPath = () => {
+    const p = pathInput.trim();
+    if (p) navigateToFolder(p);
+    exitPathMode();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commitPath(); }
+    if (e.key === 'Escape') { e.preventDefault(); exitPathMode(); }
+  };
+
+  const copyPath = async (e) => {
+    e.stopPropagation();
+    if (!currentPath) return;
+    await navigator.clipboard.writeText(currentPath);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  if (pathMode) {
+    return (
+      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+        <input
+          ref={inputRef}
+          value={pathInput}
+          onChange={e => setPathInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={exitPathMode}
+          spellCheck={false}
+          className="flex-1 h-7 px-3 text-[12px] font-mono bg-background border border-primary rounded-md focus:outline-none focus:ring-2 focus:ring-primary/40 min-w-0"
+          placeholder="Colle ou tape un chemin puis appuie sur Entrée…"
+        />
+        <button
+          onMouseDown={e => { e.preventDefault(); commitPath(); }}
+          className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-[11px] font-semibold flex-shrink-0 hover:opacity-90 transition-opacity"
+        >
+          Aller
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <nav className="flex items-center gap-1 text-[13px] min-w-0 flex-1">
-      {breadcrumbs.map((crumb, index) => (
-        <React.Fragment key={crumb.id || 'root'}>
-          {index > 0 && (
-            <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
-          )}
-          <button
-            onClick={() => navigateToFolder(crumb.path)}
-            className={cn(
-              'truncate max-w-[150px]',
-              index === breadcrumbs.length - 1 ? 'breadcrumb-item-current' : 'breadcrumb-item'
+    <nav className="group flex items-center gap-1 text-[13px] min-w-0 flex-1">
+      {/* Clickable breadcrumb area */}
+      <div
+        className="flex items-center gap-1 flex-1 min-w-0 cursor-text rounded-md px-1 py-0.5 hover:bg-secondary/50 transition-colors"
+        onClick={enterPathMode}
+        title="Cliquer pour modifier le chemin"
+      >
+        {breadcrumbs.map((crumb, index) => (
+          <React.Fragment key={crumb.id || 'root'}>
+            {index > 0 && (
+              <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
             )}
-          >
-            {crumb.name}
-          </button>
-        </React.Fragment>
-      ))}
+            <button
+              onClick={(e) => { e.stopPropagation(); navigateToFolder(crumb.path); }}
+              className={cn(
+                'truncate max-w-[150px]',
+                index === breadcrumbs.length - 1 ? 'breadcrumb-item-current' : 'breadcrumb-item'
+              )}
+            >
+              {crumb.name}
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Copy button — appears on hover */}
+      {currentPath && (
+        <button
+          onClick={copyPath}
+          title="Copier le chemin"
+          className="opacity-0 group-hover:opacity-100 transition-all h-6 w-6 flex items-center justify-center rounded hover:bg-secondary flex-shrink-0"
+        >
+          {copied
+            ? <Check size={12} className="text-green-500" />
+            : <Copy size={12} className="text-muted-foreground" />
+          }
+        </button>
+      )}
     </nav>
   );
 };
@@ -1013,15 +1126,17 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
-  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode, setSyncPanelOpen, toolbarConfig } = useTheme();
   const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
-  
+
   const handleSearchChange = (e) => {
     const value = e.target.value;
     setSearchQuery(value);
     search(value);
   };
-  
+
+  const show = (id) => toolbarConfig[id] !== false;
+
   return (
     <header className="glass-topbar h-[44px] flex-shrink-0 flex items-center justify-between px-3 gap-3">
       {/* Navigation */}
@@ -1043,12 +1158,13 @@ const TopBar = () => {
           <ChevronRight size={18} strokeWidth={1.5} />
         </button>
       </div>
-      
+
       {/* Breadcrumb */}
       <Breadcrumb />
-      
+
       {/* Right controls */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
+        {/* Search */}
         <div className="relative">
           <img src="/icons/search.svg" style={{ width: 14, height: 14, objectFit: 'contain', position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', opacity: 0.6 }} className="liquid-icon" alt="" />
           <input
@@ -1067,14 +1183,16 @@ const TopBar = () => {
             </button>
           )}
         </div>
-        
-        <div className="w-px h-5 bg-border" />
-        
-        <ViewSwitcher />
-        
+
         <div className="w-px h-5 bg-border" />
 
-        {currentPath && (
+        <ViewSwitcher />
+
+        <div className="w-px h-5 bg-border" />
+
+        {/* ── Configurable buttons ── */}
+
+        {show('star') && currentPath && (
           <button
             onClick={() => isPinned ? unpinFolder(currentPath) : pinFolder(currentPath)}
             title={isPinned ? 'Retirer des favoris' : 'Ajouter aux favoris'}
@@ -1084,20 +1202,20 @@ const TopBar = () => {
           </button>
         )}
 
-        <div className="w-px h-5 bg-border" />
+        {show('theme') && <ThemeToggle />}
 
-        <ThemeToggle />
-        
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors disabled:opacity-50"
-          onClick={refresh}
-          disabled={loading}
-          title="Actualiser (F5)"
-        >
-          <RefreshCw size={14} strokeWidth={1.5} className={loading ? 'animate-spin' : ''} />
-        </button>
-        
-        {currentPath && (
+        {show('refresh') && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors disabled:opacity-50"
+            onClick={refresh}
+            disabled={loading}
+            title="Actualiser (F5)"
+          >
+            <RefreshCw size={14} strokeWidth={1.5} className={loading ? 'animate-spin text-primary' : 'text-muted-foreground'} />
+          </button>
+        )}
+
+        {show('disk') && currentPath && (
           <button
             className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
             title="Analyse d'espace"
@@ -1107,31 +1225,48 @@ const TopBar = () => {
           </button>
         )}
 
-        <button
-          onClick={() => setSplitMode(v => !v)}
-          title={splitMode ? 'Vue simple' : 'Vue double panneau'}
-          className={cn('h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors',
-            splitMode && 'bg-primary/10 text-primary')}
-        >
-          <Columns size={14} strokeWidth={1.5} className={splitMode ? 'text-primary' : 'text-muted-foreground'} />
-        </button>
+        {show('sync') && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+            title="Synchronisation de dossiers"
+            onClick={() => setSyncPanelOpen(true)}
+          >
+            <ArrowLeftRight size={14} strokeWidth={1.5} className="text-muted-foreground" />
+          </button>
+        )}
 
-        <button
-          className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
-          title="Assistant IA"
-          onClick={() => setAiPanelOpen(true)}
-        >
-          <Sparkles size={14} strokeWidth={1.5} />
-          <span className="text-[12px] font-medium hidden sm:inline">IA</span>
-        </button>
+        {show('split') && (
+          <button
+            onClick={() => setSplitMode(v => !v)}
+            title={splitMode ? 'Vue simple' : 'Vue double panneau'}
+            className={cn('h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors',
+              splitMode && 'bg-primary/10')}
+          >
+            <Columns size={14} strokeWidth={1.5} className={splitMode ? 'text-primary' : 'text-muted-foreground'} />
+          </button>
+        )}
 
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
-          title="Préférences"
-          onClick={() => setSettingsOpen(true)}
-        >
-          <img src="/icons/settings.png" style={{ width: 16, height: 16, objectFit: 'contain' }} className="liquid-icon" alt="" />
-        </button>
+        {show('ai') && (
+          <button
+            className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
+            title="Assistant IA"
+            onClick={() => setAiPanelOpen(true)}
+          >
+            <Sparkles size={14} strokeWidth={1.5} />
+            <span className="text-[12px] font-medium hidden sm:inline">IA</span>
+          </button>
+        )}
+
+        {show('settings') && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+            title="Préférences"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <img src="/icons/settings.png" style={{ width: 16, height: 16, objectFit: 'contain' }} className="liquid-icon" alt="" />
+          </button>
+        )}
+
       </div>
     </header>
   );
@@ -2526,6 +2661,7 @@ const SettingsPanel = () => {
     visualStyle, setVisualStyle,
     accentColor, setAccentColor,
     iconTint, setIconTint, ICON_TINTS,
+    toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS,
     settingsOpen, setSettingsOpen,
     showFileSizes, setShowFileSizes,
     aiProvider, setAiProvider,
@@ -2655,6 +2791,47 @@ const SettingsPanel = () => {
                   style={{ backgroundColor: c.hex }}
                 />
               ))}
+            </div>
+          </section>
+
+          {/* Barre d'outils */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+              <SlidersHorizontal size={11} /> Barre d'outils
+            </h3>
+            <div className="space-y-1">
+              {TOOLBAR_BUTTONS.map(btn => {
+                const Icon = btn.icon;
+                const isOn = toolbarConfig[btn.id] !== false;
+                return (
+                  <label key={btn.id}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-xl border cursor-pointer transition-all select-none',
+                      isOn ? 'border-border hover:border-primary/40 bg-secondary/20' : 'border-border/50 opacity-50 hover:opacity-70'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
+                      isOn ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'
+                    )}>
+                      <Icon size={14} strokeWidth={1.5} />
+                    </div>
+                    <span className="flex-1 text-[13px]">{btn.label}</span>
+                    <div
+                      onClick={() => toggleToolbarButton(btn.id)}
+                      className={cn(
+                        'relative w-10 h-6 rounded-full transition-colors cursor-pointer flex-shrink-0',
+                        isOn ? 'bg-primary' : 'bg-border'
+                      )}
+                    >
+                      <div className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                        isOn ? 'translate-x-5' : 'translate-x-1'
+                      )} />
+                    </div>
+                  </label>
+                );
+              })}
             </div>
           </section>
 
@@ -3520,6 +3697,239 @@ const AiPanel = () => {
   );
 };
 
+// ============ SYNC PANEL ============
+
+const SYNC_KIND_META = {
+  add:         { label: 'À copier',        color: '#34C759', icon: '＋' },
+  update:      { label: 'À mettre à jour', color: '#FF9500', icon: '↑' },
+  delete:      { label: 'À supprimer',     color: '#FF3B30', icon: '✕' },
+  add_reverse: { label: 'Copie inverse',   color: '#007AFF', icon: '←' },
+  skip:        { label: 'À jour',          color: '#8E8E93', icon: '✓' },
+};
+
+const SyncPanel = () => {
+  const { syncPanelOpen, setSyncPanelOpen } = useTheme();
+  const { currentPath } = useFileManager();
+
+  const saved = () => {
+    try { return JSON.parse(localStorage.getItem('finedr_sync_config') || 'null'); } catch { return null; }
+  };
+  const [source, setSource] = useState(() => saved()?.source || '');
+  const [dest,   setDest]   = useState(() => saved()?.dest   || '');
+  const [mode,   setMode]   = useState(() => saved()?.mode   || 'one_way');
+  const [preview, setPreview] = useState(null);   // SyncAction[] | null
+  const [syncing,  setSyncing]  = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [result, setResult] = useState(null);     // completed SyncAction[] | null
+
+  // Save config to localStorage
+  useEffect(() => {
+    if (source || dest) {
+      localStorage.setItem('finedr_sync_config', JSON.stringify({ source, dest, mode }));
+    }
+  }, [source, dest, mode]);
+
+  const useCurrentAsSource = () => setSource(currentPath);
+  const useCurrentAsDest   = () => setDest(currentPath);
+
+  const handlePreview = async () => {
+    if (!source.trim() || !dest.trim()) { toast.error('Renseigne les deux dossiers'); return; }
+    setAnalyzing(true);
+    setResult(null);
+    try {
+      const actions = await invoke('preview_sync', { source: source.trim(), dest: dest.trim(), mode });
+      setPreview(actions);
+    } catch (e) { toast.error(String(e)); }
+    finally { setAnalyzing(false); }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const done = await invoke('sync_folders', { source: source.trim(), dest: dest.trim(), mode });
+      setResult(done);
+      setPreview(null);
+      const changed = done.filter(a => a.kind !== 'skip').length;
+      toast.success(`Synchronisation terminée — ${changed} opération${changed > 1 ? 's' : ''}`);
+    } catch (e) { toast.error(String(e)); }
+    finally { setSyncing(false); }
+  };
+
+  const displayList = result || preview;
+  const counts = displayList ? {
+    add:    displayList.filter(a => a.kind === 'add').length,
+    update: displayList.filter(a => a.kind === 'update').length,
+    delete: displayList.filter(a => a.kind === 'delete').length,
+    add_reverse: displayList.filter(a => a.kind === 'add_reverse').length,
+    skip:   displayList.filter(a => a.kind === 'skip').length,
+  } : null;
+  const totalChanges = counts ? counts.add + counts.update + counts.delete + counts.add_reverse : 0;
+
+  if (!syncPanelOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex">
+      {/* Backdrop */}
+      <div className="flex-1 bg-black/20 backdrop-blur-[2px]" onClick={() => setSyncPanelOpen(false)} />
+      {/* Panel */}
+      <div className="w-[420px] h-full bg-background/95 border-l border-border flex flex-col shadow-2xl animate-slide-in-right overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <RefreshCw size={18} className="text-primary" />
+            <div>
+              <p className="text-[15px] font-semibold">Synchronisation</p>
+              <p className="text-[11px] text-muted-foreground">Comparer et synchroniser deux dossiers</p>
+            </div>
+          </div>
+          <button onClick={() => setSyncPanelOpen(false)} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-secondary transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-5">
+
+          {/* Folder paths */}
+          <div className="space-y-3">
+            <div>
+              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                Source
+              </label>
+              <div className="flex gap-2">
+                <input
+                  value={source}
+                  onChange={e => setSource(e.target.value)}
+                  placeholder="C:\Users\…\Dossier"
+                  className="flex-1 h-9 px-3 text-[12px] bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono"
+                />
+                <button onClick={useCurrentAsSource} title="Utiliser le dossier actuel"
+                  className="h-9 px-3 rounded-lg border border-border text-[11px] hover:bg-secondary transition-colors flex-shrink-0 text-muted-foreground hover:text-foreground">
+                  Actuel
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                Destination
+              </label>
+              <div className="flex gap-2">
+                <input
+                  value={dest}
+                  onChange={e => setDest(e.target.value)}
+                  placeholder="C:\Users\…\Backup"
+                  className="flex-1 h-9 px-3 text-[12px] bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono"
+                />
+                <button onClick={useCurrentAsDest} title="Utiliser le dossier actuel"
+                  className="h-9 px-3 rounded-lg border border-border text-[11px] hover:bg-secondary transition-colors flex-shrink-0 text-muted-foreground hover:text-foreground">
+                  Actuel
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Mode */}
+          <div>
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">
+              Mode
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: 'one_way', label: 'Unidirectionnel', desc: 'Source → Dest, supprime les extras' },
+                { id: 'two_way', label: 'Bidirectionnel',  desc: 'Fusionne les deux dossiers' },
+              ].map(m => (
+                <button key={m.id} onClick={() => { setMode(m.id); setPreview(null); setResult(null); }}
+                  className={cn(
+                    'p-3 rounded-xl border text-left transition-all',
+                    mode === m.id ? 'border-primary bg-primary/8' : 'border-border hover:border-primary/40'
+                  )}>
+                  <div className={cn('text-[12px] font-semibold mb-0.5', mode === m.id && 'text-primary')}>{m.label}</div>
+                  <div className="text-[10px] text-muted-foreground leading-tight">{m.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Analyse button */}
+          <button
+            onClick={handlePreview}
+            disabled={analyzing || !source.trim() || !dest.trim()}
+            className="w-full h-10 rounded-xl border border-primary text-primary font-semibold text-[13px] disabled:opacity-40 hover:bg-primary/8 transition-colors flex items-center justify-center gap-2"
+          >
+            {analyzing ? <><RefreshCw size={14} className="animate-spin" /> Analyse en cours…</> : <><Search size={14} /> Analyser les différences</>}
+          </button>
+
+          {/* Summary chips */}
+          {counts && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(counts).filter(([, n]) => n > 0).map(([kind, n]) => (
+                <span key={kind} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border"
+                  style={{ color: SYNC_KIND_META[kind]?.color, borderColor: SYNC_KIND_META[kind]?.color + '44', background: SYNC_KIND_META[kind]?.color + '15' }}>
+                  <span>{SYNC_KIND_META[kind]?.icon}</span> {n} {SYNC_KIND_META[kind]?.label}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* File list preview */}
+          {displayList && displayList.length > 0 && (
+            <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin">
+              {displayList.filter(a => a.kind !== 'skip').map((action, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary/40 text-[12px]">
+                  <span className="font-bold text-[13px] flex-shrink-0 w-4 text-center"
+                    style={{ color: SYNC_KIND_META[action.kind]?.color }}>
+                    {SYNC_KIND_META[action.kind]?.icon}
+                  </span>
+                  <span className="flex-1 truncate font-mono text-[11px]">{action.rel_path}</span>
+                  <span className="text-muted-foreground flex-shrink-0">{formatFileSize(action.size)}</span>
+                </div>
+              ))}
+              {displayList.filter(a => a.kind === 'skip').length > 0 && (
+                <p className="text-[11px] text-muted-foreground/60 text-center py-1">
+                  + {displayList.filter(a => a.kind === 'skip').length} fichier(s) déjà à jour
+                </p>
+              )}
+            </div>
+          )}
+
+          {displayList && displayList.length === 0 && (
+            <div className="flex flex-col items-center py-6 text-muted-foreground">
+              <CheckCircle2 size={32} strokeWidth={1} className="mb-2 text-green-500" />
+              <p className="text-[13px]">Les dossiers sont identiques</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer — Sync button */}
+        <div className="flex-shrink-0 p-5 border-t border-border">
+          {result ? (
+            <button
+              onClick={() => { setResult(null); setPreview(null); }}
+              className="w-full h-10 rounded-xl border border-border text-[13px] hover:bg-secondary transition-colors"
+            >
+              Nouvelle synchronisation
+            </button>
+          ) : (
+            <button
+              onClick={handleSync}
+              disabled={syncing || !preview || totalChanges === 0}
+              className="w-full h-10 rounded-xl bg-primary text-primary-foreground font-semibold text-[13px] disabled:opacity-40 hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+            >
+              {syncing
+                ? <><RefreshCw size={14} className="animate-spin" /> Synchronisation…</>
+                : preview && totalChanges > 0
+                  ? <><RefreshCw size={14} /> Synchroniser ({totalChanges} changement{totalChanges > 1 ? 's' : ''})</>
+                  : <><RefreshCw size={14} /> Synchroniser</>
+              }
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ TREE VIEW PANEL ============
 
 const TreeViewPanel = () => {
@@ -3839,6 +4249,7 @@ const FileManagerApp = () => {
       <SettingsPanel />
       <DiskAnalysis />
       <TreeViewPanel />
+      <SyncPanel />
       <AiPanel />
       <Toaster position="bottom-right" richColors />
     </div>

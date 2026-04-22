@@ -1417,6 +1417,151 @@ async fn ai_analyze(request: AiAnalysisRequest) -> Result<String, String> {
     }
 }
 
+// ============ FOLDER SYNC ============
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SyncActionKind {
+    #[serde(rename = "add")]
+    Add,        // copy source → dest (new file)
+    #[serde(rename = "update")]
+    Update,     // overwrite dest (source is newer)
+    #[serde(rename = "delete")]
+    Delete,     // remove from dest (one-way: not in source)
+    #[serde(rename = "add_reverse")]
+    AddReverse, // copy dest → source (two-way: new in dest)
+    #[serde(rename = "skip")]
+    Skip,       // up-to-date, nothing to do
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncAction {
+    pub kind: SyncActionKind,
+    pub rel_path: String,
+    pub source_path: String,
+    pub dest_path: String,
+    pub size: u64,
+}
+
+/// Collect all files recursively relative to a base dir
+fn collect_files(base: &Path) -> Vec<(String, PathBuf)> {
+    let mut result = Vec::new();
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, out);
+                } else if path.is_file() {
+                    if let Ok(rel) = path.strip_prefix(base) {
+                        out.push((rel.to_string_lossy().to_string(), path.clone()));
+                    }
+                }
+            }
+        }
+    }
+    walk(base, base, &mut result);
+    result
+}
+
+fn file_mtime(path: &Path) -> Option<u64> {
+    path.metadata().ok()?.modified().ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+#[tauri::command]
+fn preview_sync(source: String, dest: String, mode: String) -> Result<Vec<SyncAction>, String> {
+    let src_base = PathBuf::from(&source);
+    let dst_base = PathBuf::from(&dest);
+
+    if !src_base.is_dir() { return Err(format!("Source introuvable : {}", source)); }
+    if !dst_base.exists() {
+        fs::create_dir_all(&dst_base).map_err(|e| e.to_string())?;
+    }
+
+    let src_files = collect_files(&src_base);
+    let dst_files = collect_files(&dst_base);
+
+    let src_map: std::collections::HashMap<String, PathBuf> = src_files.into_iter().collect();
+    let dst_map: std::collections::HashMap<String, PathBuf> = dst_files.into_iter().collect();
+
+    let mut actions: Vec<SyncAction> = Vec::new();
+
+    // Source → Dest
+    for (rel, src_path) in &src_map {
+        let dst_path = dst_base.join(rel);
+        let size = src_path.metadata().map(|m| m.len()).unwrap_or(0);
+
+        if let Some(dst_existing) = dst_map.get(rel) {
+            // Both exist: compare modification times
+            let src_mtime = file_mtime(src_path).unwrap_or(0);
+            let dst_mtime = file_mtime(dst_existing).unwrap_or(0);
+            if src_mtime > dst_mtime {
+                actions.push(SyncAction { kind: SyncActionKind::Update, rel_path: rel.clone(), source_path: src_path.to_string_lossy().to_string(), dest_path: dst_path.to_string_lossy().to_string(), size });
+            } else {
+                actions.push(SyncAction { kind: SyncActionKind::Skip, rel_path: rel.clone(), source_path: src_path.to_string_lossy().to_string(), dest_path: dst_path.to_string_lossy().to_string(), size });
+            }
+        } else {
+            // New file in source
+            actions.push(SyncAction { kind: SyncActionKind::Add, rel_path: rel.clone(), source_path: src_path.to_string_lossy().to_string(), dest_path: dst_path.to_string_lossy().to_string(), size });
+        }
+    }
+
+    // Dest-only files
+    for (rel, dst_path) in &dst_map {
+        if !src_map.contains_key(rel) {
+            let src_path = src_base.join(rel);
+            let size = dst_path.metadata().map(|m| m.len()).unwrap_or(0);
+            if mode == "two_way" {
+                // Copy back to source
+                actions.push(SyncAction { kind: SyncActionKind::AddReverse, rel_path: rel.clone(), source_path: dst_path.to_string_lossy().to_string(), dest_path: src_path.to_string_lossy().to_string(), size });
+            } else {
+                // One-way: delete from dest
+                actions.push(SyncAction { kind: SyncActionKind::Delete, rel_path: rel.clone(), source_path: src_path.to_string_lossy().to_string(), dest_path: dst_path.to_string_lossy().to_string(), size });
+            }
+        }
+    }
+
+    actions.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok(actions)
+}
+
+#[tauri::command]
+fn sync_folders(source: String, dest: String, mode: String) -> Result<Vec<SyncAction>, String> {
+    let actions = preview_sync(source, dest, mode)?;
+    let mut completed: Vec<SyncAction> = Vec::new();
+
+    for action in &actions {
+        match action.kind {
+            SyncActionKind::Add | SyncActionKind::Update => {
+                if let Some(parent) = Path::new(&action.dest_path).parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                fs::copy(&action.source_path, &action.dest_path)
+                    .map_err(|e| format!("Erreur copie {} : {}", action.rel_path, e))?;
+                completed.push(action.clone());
+            }
+            SyncActionKind::Delete => {
+                let _ = fs::remove_file(&action.dest_path);
+                completed.push(action.clone());
+            }
+            SyncActionKind::AddReverse => {
+                if let Some(parent) = Path::new(&action.dest_path).parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                fs::copy(&action.source_path, &action.dest_path)
+                    .map_err(|e| format!("Erreur copie inverse {} : {}", action.rel_path, e))?;
+                completed.push(action.clone());
+            }
+            SyncActionKind::Skip => {
+                completed.push(action.clone());
+            }
+        }
+    }
+
+    Ok(completed)
+}
+
 // ============ MAIN ============
 
 fn main() {
@@ -1456,6 +1601,8 @@ fn main() {
             ai_analyze,
             ai_propose_actions,
             ai_execute_action,
+            preview_sync,
+            sync_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
