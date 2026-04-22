@@ -1417,15 +1417,76 @@ async fn ai_analyze(request: AiAnalysisRequest) -> Result<String, String> {
     }
 }
 
-// ============ RECYCLE BIN ============
+// ============ FINEDR TRASH ============
+
+fn get_trash_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Impossible de trouver le dossier utilisateur".to_string())?;
+    let trash = PathBuf::from(home).join(".finedr_trash");
+    fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
+    Ok(trash)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrashEntry {
+    pub id: String,
+    pub name: String,
+    pub original_path: String,
+    pub trash_path: String,
+    pub size: u64,
+    pub deleted_at: String,
+}
 
 #[tauri::command]
-fn open_recycle_bin() -> Result<(), String> {
-    std::process::Command::new("explorer")
-        .arg("shell:RecycleBinFolder")
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+fn move_to_finedr_trash(path: String) -> Result<TrashEntry, String> {
+    let src = PathBuf::from(&path);
+    if !src.exists() {
+        return Err(format!("Fichier introuvable : {}", path));
+    }
+    let trash_dir = get_trash_dir()?;
+    let name = src.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("fichier")
+        .to_string();
+    let id = format!("{}_{}", chrono::Utc::now().timestamp_millis(), name);
+    let trash_path = trash_dir.join(&id);
+    let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+    let _ = fs::rename(&src, &trash_path).or_else(|_| {
+        // rename fails across drives — fall back to copy+delete
+        fs::copy(&src, &trash_path)
+            .and_then(|_| fs::remove_file(&src))
+            .map(|_| ())
+    });
+    let deleted_at = chrono::Utc::now().to_rfc3339();
+    Ok(TrashEntry {
+        id,
+        name,
+        original_path: path,
+        trash_path: trash_path.to_string_lossy().to_string(),
+        size,
+        deleted_at,
+    })
+}
+
+#[tauri::command]
+fn restore_from_finedr_trash(trash_path: String, original_path: String) -> Result<(), String> {
+    let src = PathBuf::from(&trash_path);
+    let dst = PathBuf::from(&original_path);
+    if !src.exists() {
+        return Err("Fichier introuvable dans la corbeille Finedr".to_string());
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&src, &dst).or_else(|_| {
+        fs::copy(&src, &dst).and_then(|_| fs::remove_file(&src)).map(|_| ())
+    }).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_finedr_trash_path() -> Result<String, String> {
+    get_trash_dir().map(|p| p.to_string_lossy().to_string())
 }
 
 // ============ FOLDER SYNC ============
@@ -1614,7 +1675,9 @@ fn main() {
             ai_execute_action,
             preview_sync,
             sync_folders,
-            open_recycle_bin,
+            move_to_finedr_trash,
+            restore_from_finedr_trash,
+            get_finedr_trash_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

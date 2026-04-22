@@ -474,6 +474,7 @@ const FileManagerProvider = ({ children }) => {
       name: fileItem.name,
       originalPath: fileItem.path,
       parentPath: fileItem.path.split(/[/\\]/).slice(0, -1).join('\\') || '',
+      trashPath: fileItem.trashPath || null,
       size: fileItem.size || 0,
       file_type: fileItem.file_type,
       extension: fileItem.extension || null,
@@ -496,9 +497,15 @@ const FileManagerProvider = ({ children }) => {
   const deleteFile = useCallback(async (path, permanent = false) => {
     const fileItem = files.find(f => f.path === path) || { name: path.split(/[/\\]/).pop(), path, size: 0 };
     try {
-      await invoke('delete_file', { path, permanent });
-      logDeletion(fileItem, permanent);
-      toast.success(permanent ? 'Fichier supprimé définitivement' : 'Déplacé vers la corbeille');
+      if (permanent) {
+        await invoke('delete_file', { path, permanent: true });
+        logDeletion({ ...fileItem, trashPath: null }, true);
+        toast.success('Fichier supprimé définitivement');
+      } else {
+        const entry = await invoke('move_to_finedr_trash', { path });
+        logDeletion({ ...fileItem, trashPath: entry.trash_path }, false);
+        toast.success('Déplacé vers la corbeille Finedr');
+      }
       await fetchFiles(currentPath);
     } catch (error) {
       console.error('Error deleting file:', error);
@@ -703,14 +710,14 @@ const FileManagerProvider = ({ children }) => {
     iconSize, setIconSize,
     pinnedFolders, pinFolder, unpinFolder,
     recentFolders,
-    deleteHistory, clearDeleteHistory,
+    deleteHistory, setDeleteHistory, clearDeleteHistory,
   }), [
     displayedFiles, files, currentPath, breadcrumbs, selectedFiles, view, userDirs,
     loading, searchQuery, searchResults, quickLookFile, clipboard, navigationHistory, showHidden,
     navigateToFolder, goBack, goForward, openItem, search, deleteFile, createFolder,
     renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs, iconSize,
     pinnedFolders, pinFolder, unpinFolder, recentFolders,
-    deleteHistory, clearDeleteHistory,
+    deleteHistory, setDeleteHistory, clearDeleteHistory,
   ]);
 
   return (
@@ -967,13 +974,18 @@ const Sidebar = () => {
       <div className="border-t border-border p-2 space-y-0.5">
         <SidebarItem
           icon={Trash2}
-          label="Corbeille Windows"
-          onClick={() => invoke('open_recycle_bin').catch(console.error)}
+          label="Corbeille Finedr"
+          badge={deleteHistory.filter(e => !e.permanent).length || undefined}
+          onClick={async () => {
+            try {
+              const trashPath = await invoke('get_finedr_trash_path');
+              navigateToFolder(trashPath);
+            } catch (e) { console.error(e); }
+          }}
         />
         <SidebarItem
           icon={Clock}
           label="Historique des suppressions"
-          badge={deleteHistory.length > 0 ? deleteHistory.length : undefined}
           onClick={() => setDeleteHistoryOpen(true)}
         />
       </div>
@@ -3981,7 +3993,7 @@ const SyncPanel = () => {
 
 const DeleteHistoryPanel = () => {
   const { deleteHistoryOpen, setDeleteHistoryOpen } = useTheme();
-  const { deleteHistory, clearDeleteHistory, navigateToFolder } = useFileManager();
+  const { deleteHistory, setDeleteHistory, clearDeleteHistory, navigateToFolder } = useFileManager();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all'); // 'all' | 'trash' | 'permanent'
 
@@ -4078,13 +4090,25 @@ const DeleteHistoryPanel = () => {
                   </div>
                   {/* Actions */}
                   <div className="flex-shrink-0 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {!entry.permanent && (
+                    {!entry.permanent && entry.trashPath && (
                       <button
-                        onClick={async () => { await invoke('open_recycle_bin'); }}
-                        title="Ouvrir la corbeille Windows"
+                        onClick={async () => {
+                          try {
+                            await invoke('restore_from_finedr_trash', {
+                              trashPath: entry.trashPath,
+                              originalPath: entry.originalPath,
+                            });
+                            const next = deleteHistory.filter(e => e.id !== entry.id);
+                            setDeleteHistory(next);
+                            localStorage.setItem('finedr_delete_history', JSON.stringify(next));
+                            toast.success(`${entry.name} restauré`);
+                            navigateToFolder(entry.parentPath);
+                            setDeleteHistoryOpen(false);
+                          } catch (e) { toast.error(String(e)); }
+                        }}
                         className="h-6 px-2 rounded text-[10px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                       >
-                        Corbeille
+                        Restaurer
                       </button>
                     )}
                     <button
