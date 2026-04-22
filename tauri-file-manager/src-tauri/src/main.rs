@@ -1417,6 +1417,17 @@ async fn ai_analyze(request: AiAnalysisRequest) -> Result<String, String> {
     }
 }
 
+// ============ RECYCLE BIN ============
+
+#[tauri::command]
+fn open_recycle_bin() -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg("shell:RecycleBinFolder")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ============ FOLDER SYNC ============
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1603,6 +1614,7 @@ fn main() {
             ai_execute_action,
             preview_sync,
             sync_folders,
+            open_recycle_bin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

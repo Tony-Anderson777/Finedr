@@ -142,6 +142,7 @@ const ThemeProvider = ({ children }) => {
   const [treeViewOpen, setTreeViewOpen] = useState(false);
   const [treeViewPath, setTreeViewPath] = useState('');
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+  const [deleteHistoryOpen, setDeleteHistoryOpen] = useState(false);
 
   // ── Toolbar config ────────────────────────────────────────────────────────
   const TOOLBAR_BUTTONS = [
@@ -279,6 +280,7 @@ const ThemeProvider = ({ children }) => {
       iconTint, setIconTint, ICON_TINTS,
       treeViewOpen, setTreeViewOpen, treeViewPath, setTreeViewPath,
       syncPanelOpen, setSyncPanelOpen,
+      deleteHistoryOpen, setDeleteHistoryOpen,
       toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS,
       tagData, createTag, deleteTag, toggleFileTag, getFileTags, activeTagFilter, setActiveTagFilter,
       settingsOpen, setSettingsOpen,
@@ -459,17 +461,50 @@ const FileManagerProvider = ({ children }) => {
     }
   }, [currentPath]);
 
+  // Delete history
+  const loadDeleteHistory = () => {
+    try { return JSON.parse(localStorage.getItem('finedr_delete_history') || '[]'); }
+    catch { return []; }
+  };
+  const [deleteHistory, setDeleteHistory] = useState(loadDeleteHistory);
+
+  const logDeletion = useCallback((fileItem, permanent) => {
+    const entry = {
+      id: `del_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      name: fileItem.name,
+      originalPath: fileItem.path,
+      parentPath: fileItem.path.split(/[/\\]/).slice(0, -1).join('\\') || '',
+      size: fileItem.size || 0,
+      file_type: fileItem.file_type,
+      extension: fileItem.extension || null,
+      permanent,
+      deletedAt: new Date().toISOString(),
+    };
+    setDeleteHistory(prev => {
+      const next = [entry, ...prev].slice(0, 200);
+      localStorage.setItem('finedr_delete_history', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const clearDeleteHistory = useCallback(() => {
+    setDeleteHistory([]);
+    localStorage.removeItem('finedr_delete_history');
+  }, []);
+
   // Delete file
   const deleteFile = useCallback(async (path, permanent = false) => {
+    const fileItem = files.find(f => f.path === path) || { name: path.split(/[/\\]/).pop(), path, size: 0 };
     try {
       await invoke('delete_file', { path, permanent });
+      logDeletion(fileItem, permanent);
       toast.success(permanent ? 'Fichier supprimé définitivement' : 'Déplacé vers la corbeille');
       await fetchFiles(currentPath);
     } catch (error) {
       console.error('Error deleting file:', error);
       toast.error('Erreur lors de la suppression');
     }
-  }, [currentPath, fetchFiles]);
+  }, [currentPath, fetchFiles, files, logDeletion]);
 
   // Create folder
   const createFolder = useCallback(async (name) => {
@@ -668,12 +703,14 @@ const FileManagerProvider = ({ children }) => {
     iconSize, setIconSize,
     pinnedFolders, pinFolder, unpinFolder,
     recentFolders,
+    deleteHistory, clearDeleteHistory,
   }), [
     displayedFiles, files, currentPath, breadcrumbs, selectedFiles, view, userDirs,
     loading, searchQuery, searchResults, quickLookFile, clipboard, navigationHistory, showHidden,
     navigateToFolder, goBack, goForward, openItem, search, deleteFile, createFolder,
     renameFile, copyFiles, cutFiles, pasteFiles, fetchFiles, onedriveDirs, iconSize,
     pinnedFolders, pinFolder, unpinFolder, recentFolders,
+    deleteHistory, clearDeleteHistory,
   ]);
 
   return (
@@ -744,8 +781,8 @@ const SidebarItem = ({ icon: Icon, imgSrc, label, active, onClick, badge, onRemo
 // ============ SIDEBAR ============
 
 const Sidebar = () => {
-  const { userDirs, onedriveDirs, navigateToFolder, currentPath, pinnedFolders, pinFolder, unpinFolder, recentFolders } = useFileManager();
-  const { tagData, activeTagFilter, setActiveTagFilter } = useTheme();
+  const { userDirs, onedriveDirs, navigateToFolder, currentPath, pinnedFolders, pinFolder, unpinFolder, recentFolders, deleteHistory } = useFileManager();
+  const { tagData, activeTagFilter, setActiveTagFilter, setDeleteHistoryOpen } = useTheme();
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
 
   const canPin = currentPath && !pinnedFolders.some(f => f.path === currentPath);
@@ -927,8 +964,18 @@ const Sidebar = () => {
       </div>
 
       {/* Corbeille */}
-      <div className="border-t border-border p-2">
-        <SidebarItem icon={Trash2} label="Corbeille" onClick={() => {}} />
+      <div className="border-t border-border p-2 space-y-0.5">
+        <SidebarItem
+          icon={Trash2}
+          label="Corbeille Windows"
+          onClick={() => invoke('open_recycle_bin').catch(console.error)}
+        />
+        <SidebarItem
+          icon={Clock}
+          label="Historique des suppressions"
+          badge={deleteHistory.length > 0 ? deleteHistory.length : undefined}
+          onClick={() => setDeleteHistoryOpen(true)}
+        />
       </div>
 
       {/* Tag Manager Modal */}
@@ -3930,6 +3977,147 @@ const SyncPanel = () => {
   );
 };
 
+// ============ DELETE HISTORY PANEL ============
+
+const DeleteHistoryPanel = () => {
+  const { deleteHistoryOpen, setDeleteHistoryOpen } = useTheme();
+  const { deleteHistory, clearDeleteHistory, navigateToFolder } = useFileManager();
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all'); // 'all' | 'trash' | 'permanent'
+
+  if (!deleteHistoryOpen) return null;
+
+  const filtered = deleteHistory.filter(e => {
+    const matchSearch = !search || e.name.toLowerCase().includes(search.toLowerCase()) || e.originalPath.toLowerCase().includes(search.toLowerCase());
+    const matchFilter = filter === 'all' || (filter === 'trash' && !e.permanent) || (filter === 'permanent' && e.permanent);
+    return matchSearch && matchFilter;
+  });
+
+  const formatRelative = (iso) => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(diff / 60000);
+    const h = Math.floor(m / 60);
+    const d = Math.floor(h / 24);
+    if (d > 0) return `il y a ${d} j`;
+    if (h > 0) return `il y a ${h} h`;
+    if (m > 0) return `il y a ${m} min`;
+    return 'à l\'instant';
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex">
+      <div className="flex-1 bg-black/20 backdrop-blur-[2px]" onClick={() => setDeleteHistoryOpen(false)} />
+      <div className="w-[420px] h-full bg-background/95 border-l border-border flex flex-col shadow-2xl overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <Trash2 size={18} className="text-primary" />
+            <div>
+              <p className="text-[15px] font-semibold">Historique des suppressions</p>
+              <p className="text-[11px] text-muted-foreground">{deleteHistory.length} fichier{deleteHistory.length !== 1 ? 's' : ''} supprimé{deleteHistory.length !== 1 ? 's' : ''}</p>
+            </div>
+          </div>
+          <button onClick={() => setDeleteHistoryOpen(false)} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-secondary transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-border flex-shrink-0">
+          <div className="relative flex-1">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Rechercher…"
+              className="w-full h-7 pl-7 pr-2 text-[12px] bg-secondary border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <div className="flex items-center p-0.5 bg-secondary rounded-md border border-border">
+            {[['all','Tous'],['trash','Corbeille'],['permanent','Définitif']].map(([v,l]) => (
+              <button key={v} onClick={() => setFilter(v)}
+                className={cn('h-6 px-2 text-[10px] font-medium rounded transition-colors',
+                  filter === v ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
+              <Trash2 size={36} strokeWidth={1} className="opacity-30" />
+              <p className="text-[13px]">{deleteHistory.length === 0 ? 'Aucune suppression enregistrée' : 'Aucun résultat'}</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {filtered.map(entry => (
+                <div key={entry.id} className="flex items-start gap-3 px-4 py-3 hover:bg-secondary/30 transition-colors group">
+                  <div className="flex-shrink-0 w-9 h-9 rounded-lg bg-secondary flex items-center justify-center mt-0.5">
+                    {getFileIcon(entry.file_type, entry.extension, 20)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <p className="text-[13px] font-medium truncate">{entry.name}</p>
+                      <span className={cn(
+                        'flex-shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full',
+                        entry.permanent
+                          ? 'bg-destructive/15 text-destructive'
+                          : 'bg-orange-500/15 text-orange-500'
+                      )}>
+                        {entry.permanent ? 'Définitif' : 'Corbeille'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground truncate font-mono">{entry.parentPath || '—'}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] text-muted-foreground/70">{formatRelative(entry.deletedAt)}</span>
+                      {entry.size > 0 && <span className="text-[10px] text-muted-foreground/70">· {formatFileSize(entry.size)}</span>}
+                    </div>
+                  </div>
+                  {/* Actions */}
+                  <div className="flex-shrink-0 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {!entry.permanent && (
+                      <button
+                        onClick={async () => { await invoke('open_recycle_bin'); }}
+                        title="Ouvrir la corbeille Windows"
+                        className="h-6 px-2 rounded text-[10px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      >
+                        Corbeille
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { navigateToFolder(entry.parentPath); setDeleteHistoryOpen(false); }}
+                      title="Aller au dossier parent"
+                      className="h-6 px-2 rounded text-[10px] font-medium border border-border hover:bg-secondary transition-colors"
+                    >
+                      Dossier
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {deleteHistory.length > 0 && (
+          <div className="flex-shrink-0 px-4 py-3 border-t border-border flex items-center justify-between">
+            <p className="text-[11px] text-muted-foreground">{filtered.length} sur {deleteHistory.length} entrée{deleteHistory.length !== 1 ? 's' : ''}</p>
+            <button
+              onClick={() => { if (confirm('Effacer tout l\'historique ?')) clearDeleteHistory(); }}
+              className="text-[11px] text-destructive hover:text-destructive/80 transition-colors"
+            >
+              Effacer l'historique
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ============ TREE VIEW PANEL ============
 
 const TreeViewPanel = () => {
@@ -4250,6 +4438,7 @@ const FileManagerApp = () => {
       <DiskAnalysis />
       <TreeViewPanel />
       <SyncPanel />
+      <DeleteHistoryPanel />
       <AiPanel />
       <Toaster position="bottom-right" richColors />
     </div>
