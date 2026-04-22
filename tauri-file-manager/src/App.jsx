@@ -21,7 +21,8 @@ import {
   Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud,
   Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
   ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload,
-  PackagePlus, PackageOpen, GitBranch, Trash, AlertTriangle, Clock, HardDrive as HardDriveIcon
+  PackagePlus, PackageOpen, GitBranch, Trash, AlertTriangle, Clock, HardDrive as HardDriveIcon,
+  Tag, Tags, Palette, Check
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -139,6 +140,44 @@ const ThemeProvider = ({ children }) => {
   const [iconTint, setIconTintState] = useState(() => localStorage.getItem('iconTint') || 'default');
   const [treeViewOpen, setTreeViewOpen] = useState(false);
   const [treeViewPath, setTreeViewPath] = useState('');
+
+  // ── Tags ──────────────────────────────────────────────────────────────────
+  const loadTagsFromStorage = () => {
+    try { return JSON.parse(localStorage.getItem('finedr_tags') || '{"definitions":{},"files":{}}'); }
+    catch { return { definitions: {}, files: {} }; }
+  };
+  const [tagData, setTagDataState] = useState(loadTagsFromStorage);
+  const [activeTagFilter, setActiveTagFilter] = useState(null); // tag id | null
+
+  const saveTagData = (data) => {
+    setTagDataState(data);
+    localStorage.setItem('finedr_tags', JSON.stringify(data));
+  };
+
+  const createTag = (label, color) => {
+    const id = `tag_${Date.now()}`;
+    const next = { ...tagData, definitions: { ...tagData.definitions, [id]: { id, label, color } } };
+    saveTagData(next);
+    return id;
+  };
+
+  const deleteTag = (id) => {
+    const defs = { ...tagData.definitions };
+    delete defs[id];
+    const files = Object.fromEntries(
+      Object.entries(tagData.files).map(([p, tags]) => [p, tags.filter(t => t !== id)])
+    );
+    saveTagData({ definitions: defs, files });
+  };
+
+  const toggleFileTag = (filePath, tagId) => {
+    const current = tagData.files[filePath] || [];
+    const updated = current.includes(tagId) ? current.filter(t => t !== tagId) : [...current, tagId];
+    saveTagData({ ...tagData, files: { ...tagData.files, [filePath]: updated } });
+  };
+
+  const getFileTags = (filePath) =>
+    (tagData.files[filePath] || []).map(id => tagData.definitions[id]).filter(Boolean);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showFileSizes, setShowFileSizes] = useState(() => localStorage.getItem('showFileSizes') !== 'false');
   const [aiPanelOpen, setAiPanelOpen]           = useState(false);
@@ -209,6 +248,7 @@ const ThemeProvider = ({ children }) => {
       accentColor, setAccentColor,
       iconTint, setIconTint, ICON_TINTS,
       treeViewOpen, setTreeViewOpen, treeViewPath, setTreeViewPath,
+      tagData, createTag, deleteTag, toggleFileTag, getFileTags, activeTagFilter, setActiveTagFilter,
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
       aiPanelOpen, setAiPanelOpen,
@@ -673,8 +713,11 @@ const SidebarItem = ({ icon: Icon, imgSrc, label, active, onClick, badge, onRemo
 
 const Sidebar = () => {
   const { userDirs, onedriveDirs, navigateToFolder, currentPath, pinnedFolders, pinFolder, unpinFolder, recentFolders } = useFileManager();
+  const { tagData, activeTagFilter, setActiveTagFilter } = useTheme();
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
 
   const canPin = currentPath && !pinnedFolders.some(f => f.path === currentPath);
+  const tagDefinitions = Object.values(tagData.definitions);
 
   return (
     <aside className="glass-sidebar w-[220px] flex-shrink-0 h-full flex flex-col">
@@ -781,12 +824,83 @@ const Sidebar = () => {
           <SidebarItem icon={HardDrive} label="Disques locaux" onClick={() => navigateToFolder('')} />
           <SidebarItem icon={Network} label="Réseau" onClick={() => {}} />
         </SidebarSection>
+
+        {/* Tags */}
+        {tagDefinitions.length > 0 && (
+          <>
+            <div className="h-px bg-border mx-4 my-2" />
+            <SidebarSection
+              title="Tags"
+              action={
+                <button
+                  onClick={() => setTagManagerOpen(true)}
+                  title="Gérer les tags"
+                  className="w-5 h-5 flex items-center justify-center rounded hover:bg-secondary text-muted-foreground hover:text-primary transition-colors"
+                >
+                  <Palette size={11} />
+                </button>
+              }
+            >
+              {/* "Tous" button to clear filter */}
+              {activeTagFilter && (
+                <SidebarItem
+                  icon={Tags}
+                  label="Tous les fichiers"
+                  active={false}
+                  onClick={() => setActiveTagFilter(null)}
+                />
+              )}
+              {tagDefinitions.map(tag => (
+                <div key={tag.id} className="group relative flex items-center">
+                  <button
+                    onClick={() => setActiveTagFilter(activeTagFilter === tag.id ? null : tag.id)}
+                    className={cn(
+                      'sidebar-item flex-1 min-w-0',
+                      activeTagFilter === tag.id && 'sidebar-item-active'
+                    )}
+                  >
+                    <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: tag.color }} />
+                    <span className="flex-1 truncate">{tag.label}</span>
+                    {activeTagFilter === tag.id && (
+                      <X size={10} className="text-muted-foreground" />
+                    )}
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() => setTagManagerOpen(true)}
+                className="sidebar-item text-muted-foreground/60 hover:text-muted-foreground w-full"
+              >
+                <Plus size={13} />
+                <span className="text-[11px]">Gérer les tags</span>
+              </button>
+            </SidebarSection>
+          </>
+        )}
+
+        {tagDefinitions.length === 0 && (
+          <>
+            <div className="h-px bg-border mx-4 my-2" />
+            <SidebarSection title="Tags">
+              <button
+                onClick={() => setTagManagerOpen(true)}
+                className="sidebar-item text-muted-foreground/60 hover:text-muted-foreground w-full"
+              >
+                <Plus size={13} />
+                <span className="text-[11px]">Créer un tag</span>
+              </button>
+            </SidebarSection>
+          </>
+        )}
       </div>
 
       {/* Corbeille */}
       <div className="border-t border-border p-2">
         <SidebarItem icon={Trash2} label="Corbeille" onClick={() => {}} />
       </div>
+
+      {/* Tag Manager Modal */}
+      {tagManagerOpen && <TagManagerModal onClose={() => setTagManagerOpen(false)} />}
     </aside>
   );
 };
@@ -1023,11 +1137,232 @@ const TopBar = () => {
   );
 };
 
+// ============ TAG COLORS ============
+
+const TAG_COLORS = [
+  '#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#00C7BE',
+  '#007AFF', '#5856D6', '#AF52DE', '#FF2D55', '#A2845E',
+];
+
+// ============ TAG PICKER POPOVER ============
+
+const TagPickerPopover = ({ filePath, pos, onClose }) => {
+  const { tagData, getFileTags, toggleFileTag, createTag } = useTheme();
+  const [newLabel, setNewLabel] = useState('');
+  const [newColor, setNewColor] = useState(TAG_COLORS[5]);
+  const popRef = useRef(null);
+
+  const fileTags = getFileTags(filePath);
+  const fileTagIds = (tagData.files[filePath] || []);
+  const definitions = Object.values(tagData.definitions);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (popRef.current && !popRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  // Smart position: don't overflow viewport
+  const style = {
+    position: 'fixed',
+    left: Math.min(pos.x, window.innerWidth - 240),
+    top: Math.min(pos.y, window.innerHeight - 360),
+    zIndex: 60,
+  };
+
+  const handleCreate = () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    const id = createTag(label, newColor);
+    toggleFileTag(filePath, id);
+    setNewLabel('');
+  };
+
+  return (
+    <div ref={popRef} style={style}
+      className="bg-background border border-border rounded-xl shadow-2xl w-56 p-3 animate-fade-in"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[13px] font-semibold flex items-center gap-1.5">
+          <Tag size={13} className="text-primary" /> Tags
+        </span>
+        <button onClick={onClose} className="w-5 h-5 rounded flex items-center justify-center hover:bg-secondary text-muted-foreground">
+          <X size={12} />
+        </button>
+      </div>
+
+      {/* Existing tags */}
+      {definitions.length > 0 ? (
+        <div className="space-y-0.5 mb-3 max-h-40 overflow-y-auto scrollbar-thin">
+          {definitions.map(tag => {
+            const active = fileTagIds.includes(tag.id);
+            return (
+              <button key={tag.id}
+                onClick={() => toggleFileTag(filePath, tag.id)}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] transition-colors',
+                  active ? 'bg-primary/10' : 'hover:bg-secondary/50'
+                )}
+              >
+                <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: tag.color }} />
+                <span className="flex-1 truncate text-left">{tag.label}</span>
+                {active && <Check size={12} className="text-primary flex-shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground/60 italic mb-3 px-1">Aucun tag — crée-en un ci-dessous</p>
+      )}
+
+      {/* Create new tag */}
+      <div className="border-t border-border pt-2">
+        <p className="text-[11px] text-muted-foreground font-medium mb-1.5 px-0.5">Nouveau tag</p>
+        <input
+          value={newLabel}
+          onChange={e => setNewLabel(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleCreate()}
+          placeholder="Nom du tag…"
+          className="w-full h-7 px-2 text-[12px] bg-secondary border border-border rounded-md mb-2 focus:outline-none focus:ring-1 focus:ring-primary"
+        />
+        {/* Color swatches */}
+        <div className="flex flex-wrap gap-1 mb-2">
+          {TAG_COLORS.map(c => (
+            <button key={c} onClick={() => setNewColor(c)}
+              style={{ background: c }}
+              className={cn('w-5 h-5 rounded-full transition-transform hover:scale-110',
+                newColor === c && 'ring-2 ring-offset-1 ring-primary scale-110'
+              )}
+            />
+          ))}
+        </div>
+        <button
+          onClick={handleCreate}
+          disabled={!newLabel.trim()}
+          className="w-full h-7 bg-primary text-primary-foreground rounded-md text-[12px] font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
+        >
+          Créer & appliquer
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ============ TAG MANAGER MODAL ============
+
+const TagManagerModal = ({ onClose }) => {
+  const { tagData, createTag, deleteTag } = useTheme();
+  const [newLabel, setNewLabel] = useState('');
+  const [newColor, setNewColor] = useState(TAG_COLORS[5]);
+
+  const definitions = Object.values(tagData.definitions);
+
+  const handleCreate = () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    createTag(label, newColor);
+    setNewLabel('');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-background border border-border rounded-2xl shadow-2xl w-full max-w-[400px]" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <Tags size={18} className="text-primary" />
+            <p className="text-[15px] font-semibold">Gestion des tags</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-secondary transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+
+          {/* Existing tags list */}
+          <div>
+            <p className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+              Tags existants ({definitions.length})
+            </p>
+            {definitions.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground/60 italic">Aucun tag créé</p>
+            ) : (
+              <div className="space-y-1 max-h-48 overflow-y-auto scrollbar-thin">
+                {definitions.map(tag => (
+                  <div key={tag.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary/40">
+                    <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ background: tag.color }} />
+                    <span className="flex-1 text-[13px]">{tag.label}</span>
+                    <button
+                      onClick={() => deleteTag(tag.id)}
+                      className="w-6 h-6 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive transition-colors text-muted-foreground"
+                    >
+                      <Trash size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Create new */}
+          <div className="border-t border-border pt-4">
+            <p className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+              Créer un tag
+            </p>
+            <div className="space-y-3">
+              <input
+                value={newLabel}
+                onChange={e => setNewLabel(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                placeholder="Nom du tag…"
+                className="w-full h-9 px-3 text-[13px] bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              <div>
+                <p className="text-[11px] text-muted-foreground mb-1.5">Couleur</p>
+                <div className="flex flex-wrap gap-2">
+                  {TAG_COLORS.map(c => (
+                    <button key={c} onClick={() => setNewColor(c)}
+                      style={{ background: c }}
+                      className={cn('w-6 h-6 rounded-full transition-transform hover:scale-110',
+                        newColor === c && 'ring-2 ring-offset-2 ring-primary scale-110'
+                      )}
+                    />
+                  ))}
+                </div>
+              </div>
+              <button
+                onClick={handleCreate}
+                disabled={!newLabel.trim()}
+                className="w-full h-9 bg-primary text-primary-foreground rounded-lg text-[13px] font-medium disabled:opacity-40 hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+              >
+                <Plus size={14} /> Créer le tag
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 pb-5">
+          <button onClick={onClose} className="w-full h-9 border border-border rounded-lg text-[13px] hover:bg-secondary transition-colors">
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ FILE ITEM (ICON VIEW) ============
 
 const FileItemIcon = ({ file }) => {
   const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile, iconSize, currentPath, refresh } = useFileManager();
-  const { showFileSizes, setTreeViewOpen, setTreeViewPath } = useTheme();
+  const { showFileSizes, setTreeViewOpen, setTreeViewPath, tagData, getFileTags, toggleFileTag, createTag } = useTheme();
+  const [showTagPicker, setShowTagPicker] = useState(false);
+  const [tagPickerPos, setTagPickerPos] = useState({ x: 0, y: 0 });
 
   const handleZip = async () => {
     setShowContextMenu(false);
@@ -1117,8 +1452,23 @@ const FileItemIcon = ({ file }) => {
             {formatFileSize(file.size)}
           </span>
         )}
+        {/* Tag dots */}
+        {(() => {
+          const tags = getFileTags(file.path);
+          if (!tags.length) return null;
+          return (
+            <span className="flex items-center justify-center gap-0.5 mt-1">
+              {tags.map(t => (
+                <span key={t.id} title={t.label}
+                  style={{ background: t.color }}
+                  className="inline-block w-2 h-2 rounded-full opacity-90"
+                />
+              ))}
+            </span>
+          );
+        })()}
       </button>
-      
+
       {/* Context Menu */}
       {showContextMenu && (
         <>
@@ -1181,6 +1531,17 @@ const FileItemIcon = ({ file }) => {
             )}
             <div className="h-px bg-border my-1" />
             <button
+              className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2"
+              onClick={(e) => {
+                setTagPickerPos({ x: contextMenuPos.x, y: contextMenuPos.y });
+                setShowContextMenu(false);
+                setShowTagPicker(true);
+              }}
+            >
+              <Tag size={14} /> Tags…
+            </button>
+            <div className="h-px bg-border my-1" />
+            <button
               className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2 text-destructive"
               onClick={() => { deleteFile(file.path, false); setShowContextMenu(false); }}
             >
@@ -1189,14 +1550,24 @@ const FileItemIcon = ({ file }) => {
           </div>
         </>
       )}
+
+      {/* Tag Picker Popover */}
+      {showTagPicker && (
+        <TagPickerPopover
+          filePath={file.path}
+          pos={tagPickerPos}
+          onClose={() => setShowTagPicker(false)}
+        />
+      )}
     </>
   );
 };
 
 // ============ ICONS VIEW ============
 
-const IconsView = () => {
-  const { files, setSelectedFiles, iconSize } = useFileManager();
+const IconsView = ({ files: propFiles }) => {
+  const { files: ctxFiles, setSelectedFiles, iconSize } = useFileManager();
+  const files = propFiles ?? ctxFiles;
 
   return (
     <div
@@ -1220,8 +1591,10 @@ const IconsView = () => {
 
 // ============ LIST VIEW ============
 
-const ListView = () => {
-  const { files, selectedFiles, setSelectedFiles, openItem } = useFileManager();
+const ListView = ({ files: propFiles }) => {
+  const { files: ctxFiles, selectedFiles, setSelectedFiles, openItem } = useFileManager();
+  const { getFileTags } = useTheme();
+  const files = propFiles ?? ctxFiles;
   
   return (
     <div className="flex flex-col h-full">
@@ -1260,6 +1633,21 @@ const ListView = () => {
                 <span className={cn('truncate', isSelected && 'text-primary font-medium')}>
                   {file.name}
                 </span>
+                {/* Tag badges */}
+                {(() => {
+                  const tags = getFileTags(file.path);
+                  if (!tags.length) return null;
+                  return (
+                    <span className="flex items-center gap-0.5 flex-shrink-0">
+                      {tags.map(t => (
+                        <span key={t.id} title={t.label}
+                          style={{ background: t.color }}
+                          className="inline-block w-2 h-2 rounded-full opacity-90"
+                        />
+                      ))}
+                    </span>
+                  );
+                })()}
               </div>
               <div className="w-40 px-2 text-muted-foreground truncate text-[12px]">
                 {formatDate(file.modified_at)}
@@ -1602,7 +1990,16 @@ const SecondPane = () => {
 
 const ContentArea = () => {
   const { view, files, loading, searchResults, searchQuery } = useFileManager();
-  
+  const { activeTagFilter, getFileTags } = useTheme();
+
+  const displayFiles = useMemo(() => {
+    if (!activeTagFilter) return files;
+    return files.filter(f => {
+      const tags = getFileTags(f.path);
+      return tags.some(t => t.id === activeTagFilter);
+    });
+  }, [files, activeTagFilter, getFileTags]);
+
   const ViewComponent = {
     icons: IconsView,
     list: ListView,
@@ -1618,10 +2015,15 @@ const ContentArea = () => {
     );
   }
   
-  if (files.length === 0) {
+  if (displayFiles.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
-        {searchResults !== null ? (
+        {activeTagFilter ? (
+          <>
+            <Tag size={48} strokeWidth={1} className="mb-4 opacity-50" />
+            <p>Aucun fichier avec ce tag dans ce dossier</p>
+          </>
+        ) : searchResults !== null ? (
           <>
             <Search size={48} strokeWidth={1} className="mb-4 opacity-50" />
             <p>Aucun résultat pour "{searchQuery}"</p>
@@ -1635,10 +2037,10 @@ const ContentArea = () => {
       </div>
     );
   }
-  
+
   return (
     <div className="glass-content flex-1 overflow-hidden animate-fade-in">
-      <ViewComponent />
+      <ViewComponent files={displayFiles} />
     </div>
   );
 };
@@ -2046,6 +2448,76 @@ const QuickLook = () => {
   );
 };
 
+// ============ SETTINGS TAG MANAGER ============
+
+const SettingsTagManager = () => {
+  const { tagData, createTag, deleteTag } = useTheme();
+  const [newLabel, setNewLabel] = useState('');
+  const [newColor, setNewColor] = useState(TAG_COLORS[5]);
+  const definitions = Object.values(tagData.definitions);
+
+  const handleCreate = () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    createTag(label, newColor);
+    setNewLabel('');
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Existing tags */}
+      {definitions.length > 0 ? (
+        <div className="space-y-1 max-h-36 overflow-y-auto scrollbar-thin">
+          {definitions.map(tag => (
+            <div key={tag.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary/40">
+              <span className="w-3.5 h-3.5 rounded-full flex-shrink-0" style={{ background: tag.color }} />
+              <span className="flex-1 text-[12px]">{tag.label}</span>
+              <button
+                onClick={() => deleteTag(tag.id)}
+                className="w-5 h-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive transition-colors text-muted-foreground"
+              >
+                <Trash size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground/60 italic px-1">Aucun tag créé</p>
+      )}
+
+      {/* New tag form */}
+      <div className="space-y-2">
+        <input
+          value={newLabel}
+          onChange={e => setNewLabel(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleCreate()}
+          placeholder="Nouveau tag…"
+          className="w-full h-8 px-3 text-[12px] bg-secondary/50 border border-input rounded-lg focus:outline-none focus:border-primary"
+        />
+        <div className="flex items-center gap-2">
+          <div className="flex flex-wrap gap-1.5 flex-1">
+            {TAG_COLORS.map(c => (
+              <button key={c} onClick={() => setNewColor(c)}
+                style={{ background: c }}
+                className={cn('w-5 h-5 rounded-full hover:scale-110 transition-transform',
+                  newColor === c && 'ring-2 ring-offset-1 ring-primary scale-110'
+                )}
+              />
+            ))}
+          </div>
+          <button
+            onClick={handleCreate}
+            disabled={!newLabel.trim()}
+            className="h-8 px-3 bg-primary text-primary-foreground rounded-lg text-[12px] font-medium disabled:opacity-40 hover:opacity-90 transition-opacity flex items-center gap-1.5 flex-shrink-0"
+          >
+            <Plus size={12} /> Créer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ SETTINGS PANEL ============
 
 const SettingsPanel = () => {
@@ -2264,6 +2736,14 @@ const SettingsPanel = () => {
                 );
               })}
             </div>
+          </section>
+
+          {/* Tags */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+              <Tags size={11} /> Tags & étiquettes
+            </h3>
+            <SettingsTagManager />
           </section>
 
           {/* IA */}
