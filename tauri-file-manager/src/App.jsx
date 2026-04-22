@@ -22,7 +22,8 @@ import {
   Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
   ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload,
   PackagePlus, PackageOpen, GitBranch, Trash, AlertTriangle, Clock, HardDrive as HardDriveIcon,
-  Tag, Tags, Palette, Check
+  Tag, Tags, Palette, Check,
+  ArrowLeftRight, SlidersHorizontal
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -142,6 +143,34 @@ const ThemeProvider = ({ children }) => {
   const [treeViewPath, setTreeViewPath] = useState('');
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
+  // ── Toolbar config ────────────────────────────────────────────────────────
+  const TOOLBAR_BUTTONS = [
+    { id: 'star',     label: 'Favoris',           icon: Star },
+    { id: 'theme',    label: 'Thème',              icon: Sun },
+    { id: 'refresh',  label: 'Actualiser',         icon: RefreshCw },
+    { id: 'disk',     label: 'Analyse d\'espace',  icon: BarChart2 },
+    { id: 'sync',     label: 'Synchronisation',    icon: ArrowLeftRight },
+    { id: 'split',    label: 'Vue double',          icon: Columns },
+    { id: 'ai',       label: 'Assistant IA',       icon: Sparkles },
+    { id: 'settings', label: 'Préférences',        icon: Settings },
+  ];
+  const loadToolbar = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('finedr_toolbar') || 'null');
+      if (saved) return saved;
+    } catch {}
+    return Object.fromEntries(TOOLBAR_BUTTONS.map(b => [b.id, true]));
+  };
+  const [toolbarConfig, setToolbarConfigState] = useState(loadToolbar);
+  const setToolbarConfig = (next) => {
+    setToolbarConfigState(next);
+    localStorage.setItem('finedr_toolbar', JSON.stringify(next));
+  };
+  const toggleToolbarButton = (id) => {
+    const next = { ...toolbarConfig, [id]: !toolbarConfig[id] };
+    setToolbarConfig(next);
+  };
+
   // ── Tags ──────────────────────────────────────────────────────────────────
   const loadTagsFromStorage = () => {
     try { return JSON.parse(localStorage.getItem('finedr_tags') || '{"definitions":{},"files":{}}'); }
@@ -250,6 +279,7 @@ const ThemeProvider = ({ children }) => {
       iconTint, setIconTint, ICON_TINTS,
       treeViewOpen, setTreeViewOpen, treeViewPath, setTreeViewPath,
       syncPanelOpen, setSyncPanelOpen,
+      toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS,
       tagData, createTag, deleteTag, toggleFileTag, getFileTags, activeTagFilter, setActiveTagFilter,
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
@@ -1015,15 +1045,30 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
-  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode, setSyncPanelOpen } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode, setSyncPanelOpen, toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS } = useTheme();
   const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
-  
+  const [showToolbarMenu, setShowToolbarMenu] = useState(false);
+  const toolbarMenuRef = useRef(null);
+
+  // Close toolbar menu on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (toolbarMenuRef.current && !toolbarMenuRef.current.contains(e.target)) {
+        setShowToolbarMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
   const handleSearchChange = (e) => {
     const value = e.target.value;
     setSearchQuery(value);
     search(value);
   };
-  
+
+  const show = (id) => toolbarConfig[id] !== false;
+
   return (
     <header className="glass-topbar h-[44px] flex-shrink-0 flex items-center justify-between px-3 gap-3">
       {/* Navigation */}
@@ -1045,12 +1090,13 @@ const TopBar = () => {
           <ChevronRight size={18} strokeWidth={1.5} />
         </button>
       </div>
-      
+
       {/* Breadcrumb */}
       <Breadcrumb />
-      
+
       {/* Right controls */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
+        {/* Search */}
         <div className="relative">
           <img src="/icons/search.svg" style={{ width: 14, height: 14, objectFit: 'contain', position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', opacity: 0.6 }} className="liquid-icon" alt="" />
           <input
@@ -1069,14 +1115,16 @@ const TopBar = () => {
             </button>
           )}
         </div>
-        
-        <div className="w-px h-5 bg-border" />
-        
-        <ViewSwitcher />
-        
+
         <div className="w-px h-5 bg-border" />
 
-        {currentPath && (
+        <ViewSwitcher />
+
+        <div className="w-px h-5 bg-border" />
+
+        {/* ── Configurable buttons ── */}
+
+        {show('star') && currentPath && (
           <button
             onClick={() => isPinned ? unpinFolder(currentPath) : pinFolder(currentPath)}
             title={isPinned ? 'Retirer des favoris' : 'Ajouter aux favoris'}
@@ -1086,20 +1134,20 @@ const TopBar = () => {
           </button>
         )}
 
-        <div className="w-px h-5 bg-border" />
+        {show('theme') && <ThemeToggle />}
 
-        <ThemeToggle />
-        
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors disabled:opacity-50"
-          onClick={refresh}
-          disabled={loading}
-          title="Actualiser (F5)"
-        >
-          <RefreshCw size={14} strokeWidth={1.5} className={loading ? 'animate-spin' : ''} />
-        </button>
-        
-        {currentPath && (
+        {show('refresh') && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors disabled:opacity-50"
+            onClick={refresh}
+            disabled={loading}
+            title="Actualiser (F5)"
+          >
+            <RefreshCw size={14} strokeWidth={1.5} className={loading ? 'animate-spin text-primary' : 'text-muted-foreground'} />
+          </button>
+        )}
+
+        {show('disk') && currentPath && (
           <button
             className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
             title="Analyse d'espace"
@@ -1109,39 +1157,97 @@ const TopBar = () => {
           </button>
         )}
 
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
-          title="Synchronisation de dossiers"
-          onClick={() => setSyncPanelOpen(true)}
-        >
-          <RefreshCw size={14} strokeWidth={1.5} className="text-muted-foreground" />
-        </button>
+        {show('sync') && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+            title="Synchronisation de dossiers"
+            onClick={() => setSyncPanelOpen(true)}
+          >
+            <ArrowLeftRight size={14} strokeWidth={1.5} className="text-muted-foreground" />
+          </button>
+        )}
 
-        <button
-          onClick={() => setSplitMode(v => !v)}
-          title={splitMode ? 'Vue simple' : 'Vue double panneau'}
-          className={cn('h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors',
-            splitMode && 'bg-primary/10 text-primary')}
-        >
-          <Columns size={14} strokeWidth={1.5} className={splitMode ? 'text-primary' : 'text-muted-foreground'} />
-        </button>
+        {show('split') && (
+          <button
+            onClick={() => setSplitMode(v => !v)}
+            title={splitMode ? 'Vue simple' : 'Vue double panneau'}
+            className={cn('h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors',
+              splitMode && 'bg-primary/10')}
+          >
+            <Columns size={14} strokeWidth={1.5} className={splitMode ? 'text-primary' : 'text-muted-foreground'} />
+          </button>
+        )}
 
-        <button
-          className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
-          title="Assistant IA"
-          onClick={() => setAiPanelOpen(true)}
-        >
-          <Sparkles size={14} strokeWidth={1.5} />
-          <span className="text-[12px] font-medium hidden sm:inline">IA</span>
-        </button>
+        {show('ai') && (
+          <button
+            className="h-7 px-2 flex items-center gap-1.5 rounded-md hover:bg-secondary transition-colors text-primary"
+            title="Assistant IA"
+            onClick={() => setAiPanelOpen(true)}
+          >
+            <Sparkles size={14} strokeWidth={1.5} />
+            <span className="text-[12px] font-medium hidden sm:inline">IA</span>
+          </button>
+        )}
 
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
-          title="Préférences"
-          onClick={() => setSettingsOpen(true)}
-        >
-          <img src="/icons/settings.png" style={{ width: 16, height: 16, objectFit: 'contain' }} className="liquid-icon" alt="" />
-        </button>
+        {show('settings') && (
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+            title="Préférences"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <img src="/icons/settings.png" style={{ width: 16, height: 16, objectFit: 'contain' }} className="liquid-icon" alt="" />
+          </button>
+        )}
+
+        {/* ── Toolbar customiser ── */}
+        <div className="relative" ref={toolbarMenuRef}>
+          <button
+            onClick={() => setShowToolbarMenu(v => !v)}
+            title="Personnaliser la barre d'outils"
+            className={cn(
+              'h-7 w-7 flex items-center justify-center rounded-md transition-colors',
+              showToolbarMenu ? 'bg-primary/10 text-primary' : 'hover:bg-secondary text-muted-foreground/50 hover:text-muted-foreground'
+            )}
+          >
+            <SlidersHorizontal size={13} strokeWidth={1.5} />
+          </button>
+
+          {showToolbarMenu && (
+            <div className="absolute right-0 top-9 z-50 bg-background border border-border rounded-xl shadow-2xl w-52 p-2 animate-fade-in">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 pb-1.5 pt-0.5">
+                Boutons visibles
+              </p>
+              {TOOLBAR_BUTTONS.map(btn => {
+                const Icon = btn.icon;
+                const isOn = toolbarConfig[btn.id] !== false;
+                return (
+                  <button
+                    key={btn.id}
+                    onClick={() => toggleToolbarButton(btn.id)}
+                    className={cn(
+                      'w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[12px] transition-colors',
+                      isOn ? 'hover:bg-secondary/50' : 'opacity-50 hover:opacity-70 hover:bg-secondary/30'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-colors',
+                      isOn ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'
+                    )}>
+                      <Icon size={11} strokeWidth={1.8} />
+                    </div>
+                    <span className="flex-1 text-left">{btn.label}</span>
+                    <div className={cn(
+                      'w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors',
+                      isOn ? 'bg-primary border-primary' : 'border-border'
+                    )}>
+                      {isOn && <Check size={9} strokeWidth={3} className="text-primary-foreground" />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
