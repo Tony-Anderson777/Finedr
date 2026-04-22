@@ -1045,21 +1045,8 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
-  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode, setSyncPanelOpen, toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode, setSyncPanelOpen, toolbarConfig } = useTheme();
   const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
-  const [showToolbarMenu, setShowToolbarMenu] = useState(false);
-  const toolbarMenuRef = useRef(null);
-
-  // Close toolbar menu on outside click
-  useEffect(() => {
-    const handler = (e) => {
-      if (toolbarMenuRef.current && !toolbarMenuRef.current.contains(e.target)) {
-        setShowToolbarMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
 
   const handleSearchChange = (e) => {
     const value = e.target.value;
@@ -1199,55 +1186,6 @@ const TopBar = () => {
           </button>
         )}
 
-        {/* ── Toolbar customiser ── */}
-        <div className="relative" ref={toolbarMenuRef}>
-          <button
-            onClick={() => setShowToolbarMenu(v => !v)}
-            title="Personnaliser la barre d'outils"
-            className={cn(
-              'h-7 w-7 flex items-center justify-center rounded-md transition-colors',
-              showToolbarMenu ? 'bg-primary/10 text-primary' : 'hover:bg-secondary text-muted-foreground/50 hover:text-muted-foreground'
-            )}
-          >
-            <SlidersHorizontal size={13} strokeWidth={1.5} />
-          </button>
-
-          {showToolbarMenu && (
-            <div className="absolute right-0 top-9 z-50 bg-background border border-border rounded-xl shadow-2xl w-52 p-2 animate-fade-in">
-              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 pb-1.5 pt-0.5">
-                Boutons visibles
-              </p>
-              {TOOLBAR_BUTTONS.map(btn => {
-                const Icon = btn.icon;
-                const isOn = toolbarConfig[btn.id] !== false;
-                return (
-                  <button
-                    key={btn.id}
-                    onClick={() => toggleToolbarButton(btn.id)}
-                    className={cn(
-                      'w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[12px] transition-colors',
-                      isOn ? 'hover:bg-secondary/50' : 'opacity-50 hover:opacity-70 hover:bg-secondary/30'
-                    )}
-                  >
-                    <div className={cn(
-                      'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-colors',
-                      isOn ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'
-                    )}>
-                      <Icon size={11} strokeWidth={1.8} />
-                    </div>
-                    <span className="flex-1 text-left">{btn.label}</span>
-                    <div className={cn(
-                      'w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors',
-                      isOn ? 'bg-primary border-primary' : 'border-border'
-                    )}>
-                      {isOn && <Check size={9} strokeWidth={3} className="text-primary-foreground" />}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
       </div>
     </header>
   );
@@ -2642,6 +2580,7 @@ const SettingsPanel = () => {
     visualStyle, setVisualStyle,
     accentColor, setAccentColor,
     iconTint, setIconTint, ICON_TINTS,
+    toolbarConfig, toggleToolbarButton, TOOLBAR_BUTTONS,
     settingsOpen, setSettingsOpen,
     showFileSizes, setShowFileSizes,
     aiProvider, setAiProvider,
@@ -2771,6 +2710,47 @@ const SettingsPanel = () => {
                   style={{ backgroundColor: c.hex }}
                 />
               ))}
+            </div>
+          </section>
+
+          {/* Barre d'outils */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+              <SlidersHorizontal size={11} /> Barre d'outils
+            </h3>
+            <div className="space-y-1">
+              {TOOLBAR_BUTTONS.map(btn => {
+                const Icon = btn.icon;
+                const isOn = toolbarConfig[btn.id] !== false;
+                return (
+                  <label key={btn.id}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-xl border cursor-pointer transition-all select-none',
+                      isOn ? 'border-border hover:border-primary/40 bg-secondary/20' : 'border-border/50 opacity-50 hover:opacity-70'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
+                      isOn ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'
+                    )}>
+                      <Icon size={14} strokeWidth={1.5} />
+                    </div>
+                    <span className="flex-1 text-[13px]">{btn.label}</span>
+                    <div
+                      onClick={() => toggleToolbarButton(btn.id)}
+                      className={cn(
+                        'relative w-10 h-6 rounded-full transition-colors cursor-pointer flex-shrink-0',
+                        isOn ? 'bg-primary' : 'bg-border'
+                      )}
+                    >
+                      <div className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform',
+                        isOn ? 'translate-x-5' : 'translate-x-1'
+                      )} />
+                    </div>
+                  </label>
+                );
+              })}
             </div>
           </section>
 
