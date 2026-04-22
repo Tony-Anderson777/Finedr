@@ -7,6 +7,10 @@ import { Toaster, toast } from 'sonner';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import hljs from 'highlight.js';
+
 // Lucide Icons
 import {
   Folder, File, FileText, FileImage, FileVideo, FileAudio, FileArchive, FileCode,
@@ -1865,62 +1869,177 @@ const StatusBar = () => {
 
 // ============ QUICK LOOK ============
 
+const CODE_EXTENSIONS = ['js','jsx','ts','tsx','py','rs','java','cpp','c','h','cs','go','rb',
+  'php','swift','kt','vue','html','css','scss','json','xml','yaml','yml','toml','sh','bat',
+  'ps1','sql','md','markdown','txt','log','ini','env','gitignore'];
+
+const VIDEO_EXTENSIONS = ['mp4','webm','mov','avi','mkv','m4v'];
+const AUDIO_EXTENSIONS = ['mp3','wav','flac','aac','ogg','m4a','wma'];
+
+function useTextContent(file) {
+  const [content, setContent] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!file) return;
+    const ext = (file.extension || '').toLowerCase();
+    if ([...CODE_EXTENSIONS, 'txt', 'log', 'md', 'markdown'].includes(ext) && file.size < 1024 * 512) {
+      setLoading(true);
+      invoke('get_file_content', { path: file.path })
+        .then(setContent)
+        .catch(() => setContent(null))
+        .finally(() => setLoading(false));
+    } else {
+      setContent(null);
+    }
+  }, [file?.path]);
+  return { content, loading };
+}
+
 const QuickLook = () => {
   const { quickLookFile, setQuickLookFile } = useFileManager();
-  
+  const { content, loading } = useTextContent(quickLookFile);
+  const [zoom, setZoom] = useState(1);
+
+  useEffect(() => { setZoom(1); }, [quickLookFile?.path]);
+
   if (!quickLookFile) return null;
-  
+
+  const ext = (quickLookFile.extension || '').toLowerCase();
+  const isImage   = quickLookFile.file_type === 'image';
+  const isVideo   = VIDEO_EXTENSIONS.includes(ext);
+  const isAudio   = AUDIO_EXTENSIONS.includes(ext);
+  const isPdf     = ext === 'pdf';
+  const isMarkdown = ['md', 'markdown'].includes(ext);
+  const isCode    = CODE_EXTENSIONS.includes(ext) && !isMarkdown;
+  const isText    = ext === 'txt' || ext === 'log';
+
+  const highlighted = useMemo(() => {
+    if (!isCode || !content) return null;
+    try {
+      const lang = hljs.getLanguage(ext) ? ext : 'plaintext';
+      return hljs.highlight(content, { language: lang }).value;
+    } catch { return null; }
+  }, [content, ext, isCode]);
+
+  const src = convertFileSrc(quickLookFile.path);
+
   return (
-    <div 
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center"
+    <div
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-6"
       onClick={() => setQuickLookFile(null)}
     >
-      <div 
-        className="bg-background rounded-xl shadow-2xl overflow-hidden max-w-4xl max-h-[90vh] animate-scale-in"
+      <div
+        className="bg-background/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-scale-in"
+        style={{ width: isPdf || isCode || isMarkdown ? 860 : 720, maxHeight: '92vh' }}
         onClick={e => e.stopPropagation()}
       >
-        <div className="px-4 py-3 border-b border-border flex items-center gap-2">
-          {getFileIcon(quickLookFile.file_type, quickLookFile.extension, 16)}
-          <span className="text-sm font-medium">{quickLookFile.name}</span>
-          <button 
-            className="ml-auto p-1 hover:bg-secondary rounded"
-            onClick={() => setQuickLookFile(null)}
-          >
-            <X size={16} />
+        {/* Header */}
+        <div className="flex-shrink-0 px-4 py-3 border-b border-border flex items-center gap-2.5">
+          {getFileIcon(quickLookFile.file_type, quickLookFile.extension, 18)}
+          <span className="text-[13px] font-semibold flex-1 truncate">{quickLookFile.name}</span>
+          <span className="text-[11px] text-muted-foreground">{formatFileSize(quickLookFile.size)}</span>
+          {isImage && (
+            <div className="flex items-center gap-1 ml-2">
+              <button onClick={() => setZoom(z => Math.max(0.25, z - 0.25))} className="px-2 py-0.5 rounded text-[12px] hover:bg-secondary">−</button>
+              <span className="text-[11px] text-muted-foreground w-10 text-center">{Math.round(zoom * 100)}%</span>
+              <button onClick={() => setZoom(z => Math.min(4, z + 0.25))} className="px-2 py-0.5 rounded text-[12px] hover:bg-secondary">+</button>
+            </div>
+          )}
+          <button className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-secondary transition-colors ml-1"
+            onClick={() => setQuickLookFile(null)}>
+            <X size={14} />
           </button>
         </div>
-        
-        <div className="flex flex-col items-center justify-center" style={{ minHeight: 300, maxHeight: '70vh' }}>
-          {quickLookFile.file_type === 'image' ? (
-            <img
-              key={quickLookFile.path}
-              src={convertFileSrc(quickLookFile.path)}
-              alt={quickLookFile.name}
-              className="max-w-[700px] max-h-[60vh] object-contain rounded-lg"
-            />
-          ) : quickLookFile.extension === 'pdf' ? (
-            <iframe
-              key={quickLookFile.path}
-              src={convertFileSrc(quickLookFile.path)}
-              className="rounded border-0"
-              style={{ width: 700, height: 500 }}
-              title={quickLookFile.name}
-            />
-          ) : (
-            <div className="p-8 flex flex-col items-center">
-              {getFileIcon(quickLookFile.file_type, quickLookFile.extension, 96)}
-              <p className="mt-4 text-lg font-medium">{quickLookFile.name}</p>
-              <p className="text-muted-foreground">{getFileKind(quickLookFile.file_type, quickLookFile.extension)}</p>
-              <p className="text-muted-foreground">{formatFileSize(quickLookFile.size)}</p>
-              <p className="text-sm text-muted-foreground mt-4">
-                Modifié le {formatDate(quickLookFile.modified_at)}
-              </p>
+
+        {/* Content */}
+        <div className="flex-1 overflow-auto min-h-0">
+
+          {/* Image */}
+          {isImage && (
+            <div className="flex items-center justify-center p-4 min-h-[300px] overflow-auto">
+              <img
+                src={src}
+                alt={quickLookFile.name}
+                style={{ transform: `scale(${zoom})`, transformOrigin: 'center', transition: 'transform 0.15s' }}
+                className="max-w-full rounded-lg shadow-md"
+              />
+            </div>
+          )}
+
+          {/* Video */}
+          {isVideo && (
+            <div className="flex items-center justify-center p-4 bg-black">
+              <video controls autoPlay className="max-w-full max-h-[70vh] rounded-lg" src={src} />
+            </div>
+          )}
+
+          {/* Audio */}
+          {isAudio && (
+            <div className="flex flex-col items-center justify-center gap-6 p-12">
+              <img src="/icons/file.svg" className="liquid-icon" style={{ width: 72, height: 72 }} alt="" />
+              <p className="text-[15px] font-semibold">{quickLookFile.name}</p>
+              <audio controls className="w-full max-w-md" src={src} />
+            </div>
+          )}
+
+          {/* PDF */}
+          {isPdf && (
+            <iframe src={src} className="w-full border-0" style={{ height: '75vh' }} title={quickLookFile.name} />
+          )}
+
+          {/* Markdown */}
+          {isMarkdown && (
+            <div className="p-6 overflow-auto prose prose-sm dark:prose-invert max-w-none prose-pre:bg-secondary prose-code:text-primary">
+              {loading
+                ? <div className="flex items-center justify-center h-40"><Loader2 size={20} className="animate-spin text-primary" /></div>
+                : <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || ''}</ReactMarkdown>
+              }
+            </div>
+          )}
+
+          {/* Code */}
+          {isCode && (
+            <div className="overflow-auto" style={{ maxHeight: '75vh' }}>
+              {loading
+                ? <div className="flex items-center justify-center h-40"><Loader2 size={20} className="animate-spin text-primary" /></div>
+                : (
+                  <pre className="p-5 text-[12px] leading-relaxed font-mono m-0 bg-[#1e1e2e]">
+                    {highlighted
+                      ? <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+                      : <code className="text-foreground">{content}</code>
+                    }
+                  </pre>
+                )
+              }
+            </div>
+          )}
+
+          {/* Plain text / log */}
+          {isText && (
+            <div className="overflow-auto" style={{ maxHeight: '75vh' }}>
+              {loading
+                ? <div className="flex items-center justify-center h-40"><Loader2 size={20} className="animate-spin text-primary" /></div>
+                : <pre className="p-5 text-[12px] leading-relaxed font-mono whitespace-pre-wrap text-foreground">{content}</pre>
+              }
+            </div>
+          )}
+
+          {/* Fallback */}
+          {!isImage && !isVideo && !isAudio && !isPdf && !isMarkdown && !isCode && !isText && (
+            <div className="flex flex-col items-center justify-center gap-4 p-12">
+              {getFileIcon(quickLookFile.file_type, quickLookFile.extension, 80)}
+              <p className="text-[16px] font-semibold mt-2">{quickLookFile.name}</p>
+              <p className="text-muted-foreground text-[13px]">{getFileKind(quickLookFile.file_type, quickLookFile.extension)}</p>
+              <p className="text-muted-foreground text-[13px]">{formatFileSize(quickLookFile.size)}</p>
+              <p className="text-[12px] text-muted-foreground">Modifié le {formatDate(quickLookFile.modified_at)}</p>
             </div>
           )}
         </div>
-        
-        <div className="px-4 py-2 border-t border-border text-xs text-muted-foreground flex justify-between">
-          <span>{quickLookFile.path}</span>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 px-4 py-2 border-t border-border flex items-center justify-between">
+          <span className="text-[11px] text-muted-foreground truncate max-w-[80%]">{quickLookFile.path}</span>
+          <span className="text-[11px] text-muted-foreground">{formatDate(quickLookFile.modified_at)}</span>
         </div>
       </div>
     </div>
