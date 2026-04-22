@@ -48,6 +48,29 @@
 }
 
 /* ============================================================
+   SYNTAX HIGHLIGHTING (highlight.js — One Dark Pro style)
+   ============================================================ */
+
+.hljs-keyword, .hljs-selector-tag { color: #c678dd; }
+.hljs-string, .hljs-attr          { color: #98c379; }
+.hljs-number, .hljs-literal       { color: #d19a66; }
+.hljs-comment                     { color: #5c6370; font-style: italic; }
+.hljs-function, .hljs-title       { color: #61afef; }
+.hljs-variable, .hljs-name        { color: #e06c75; }
+.hljs-type, .hljs-class           { color: #e5c07b; }
+.hljs-operator, .hljs-punctuation { color: #abb2bf; }
+.hljs-built_in                    { color: #56b6c2; }
+.hljs-meta                        { color: #61afef; }
+
+/* Markdown prose styles */
+.prose pre  { border-radius: 0.5rem; overflow-x: auto; }
+.prose code { font-size: 0.85em; }
+.prose table { border-collapse: collapse; width: 100%; }
+.prose th, .prose td { border: 1px solid hsl(var(--border)); padding: 0.4rem 0.75rem; }
+.prose th { background: hsl(var(--secondary)); }
+.prose blockquote { border-left: 3px solid hsl(var(--primary)); padding-left: 1rem; opacity: 0.8; }
+
+/* ============================================================
    LIQUID GLASS ICONS — visibility on light/dark backgrounds
    ============================================================ */
 
