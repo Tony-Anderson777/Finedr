@@ -140,6 +140,7 @@ const ThemeProvider = ({ children }) => {
   const [iconTint, setIconTintState] = useState(() => localStorage.getItem('iconTint') || 'default');
   const [treeViewOpen, setTreeViewOpen] = useState(false);
   const [treeViewPath, setTreeViewPath] = useState('');
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
   // ── Tags ──────────────────────────────────────────────────────────────────
   const loadTagsFromStorage = () => {
@@ -248,6 +249,7 @@ const ThemeProvider = ({ children }) => {
       accentColor, setAccentColor,
       iconTint, setIconTint, ICON_TINTS,
       treeViewOpen, setTreeViewOpen, treeViewPath, setTreeViewPath,
+      syncPanelOpen, setSyncPanelOpen,
       tagData, createTag, deleteTag, toggleFileTag, getFileTags, activeTagFilter, setActiveTagFilter,
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
@@ -1013,7 +1015,7 @@ const Breadcrumb = () => {
 
 const TopBar = () => {
   const { goBack, goForward, navigationHistory, searchQuery, setSearchQuery, search, refresh, loading, currentPath, pinnedFolders, pinFolder, unpinFolder } = useFileManager();
-  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode } = useTheme();
+  const { setSettingsOpen, setAiPanelOpen, setDiskAnalysisOpen, splitMode, setSplitMode, setSyncPanelOpen } = useTheme();
   const isPinned = currentPath && pinnedFolders.some(f => f.path === currentPath);
   
   const handleSearchChange = (e) => {
@@ -1106,6 +1108,14 @@ const TopBar = () => {
             <BarChart2 size={14} strokeWidth={1.5} className="text-muted-foreground" />
           </button>
         )}
+
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-secondary transition-colors"
+          title="Synchronisation de dossiers"
+          onClick={() => setSyncPanelOpen(true)}
+        >
+          <RefreshCw size={14} strokeWidth={1.5} className="text-muted-foreground" />
+        </button>
 
         <button
           onClick={() => setSplitMode(v => !v)}
@@ -3520,6 +3530,239 @@ const AiPanel = () => {
   );
 };
 
+// ============ SYNC PANEL ============
+
+const SYNC_KIND_META = {
+  add:         { label: 'À copier',        color: '#34C759', icon: '＋' },
+  update:      { label: 'À mettre à jour', color: '#FF9500', icon: '↑' },
+  delete:      { label: 'À supprimer',     color: '#FF3B30', icon: '✕' },
+  add_reverse: { label: 'Copie inverse',   color: '#007AFF', icon: '←' },
+  skip:        { label: 'À jour',          color: '#8E8E93', icon: '✓' },
+};
+
+const SyncPanel = () => {
+  const { syncPanelOpen, setSyncPanelOpen } = useTheme();
+  const { currentPath } = useFileManager();
+
+  const saved = () => {
+    try { return JSON.parse(localStorage.getItem('finedr_sync_config') || 'null'); } catch { return null; }
+  };
+  const [source, setSource] = useState(() => saved()?.source || '');
+  const [dest,   setDest]   = useState(() => saved()?.dest   || '');
+  const [mode,   setMode]   = useState(() => saved()?.mode   || 'one_way');
+  const [preview, setPreview] = useState(null);   // SyncAction[] | null
+  const [syncing,  setSyncing]  = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [result, setResult] = useState(null);     // completed SyncAction[] | null
+
+  // Save config to localStorage
+  useEffect(() => {
+    if (source || dest) {
+      localStorage.setItem('finedr_sync_config', JSON.stringify({ source, dest, mode }));
+    }
+  }, [source, dest, mode]);
+
+  const useCurrentAsSource = () => setSource(currentPath);
+  const useCurrentAsDest   = () => setDest(currentPath);
+
+  const handlePreview = async () => {
+    if (!source.trim() || !dest.trim()) { toast.error('Renseigne les deux dossiers'); return; }
+    setAnalyzing(true);
+    setResult(null);
+    try {
+      const actions = await invoke('preview_sync', { source: source.trim(), dest: dest.trim(), mode });
+      setPreview(actions);
+    } catch (e) { toast.error(String(e)); }
+    finally { setAnalyzing(false); }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const done = await invoke('sync_folders', { source: source.trim(), dest: dest.trim(), mode });
+      setResult(done);
+      setPreview(null);
+      const changed = done.filter(a => a.kind !== 'skip').length;
+      toast.success(`Synchronisation terminée — ${changed} opération${changed > 1 ? 's' : ''}`);
+    } catch (e) { toast.error(String(e)); }
+    finally { setSyncing(false); }
+  };
+
+  const displayList = result || preview;
+  const counts = displayList ? {
+    add:    displayList.filter(a => a.kind === 'add').length,
+    update: displayList.filter(a => a.kind === 'update').length,
+    delete: displayList.filter(a => a.kind === 'delete').length,
+    add_reverse: displayList.filter(a => a.kind === 'add_reverse').length,
+    skip:   displayList.filter(a => a.kind === 'skip').length,
+  } : null;
+  const totalChanges = counts ? counts.add + counts.update + counts.delete + counts.add_reverse : 0;
+
+  if (!syncPanelOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex">
+      {/* Backdrop */}
+      <div className="flex-1 bg-black/20 backdrop-blur-[2px]" onClick={() => setSyncPanelOpen(false)} />
+      {/* Panel */}
+      <div className="w-[420px] h-full bg-background/95 border-l border-border flex flex-col shadow-2xl animate-slide-in-right overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <RefreshCw size={18} className="text-primary" />
+            <div>
+              <p className="text-[15px] font-semibold">Synchronisation</p>
+              <p className="text-[11px] text-muted-foreground">Comparer et synchroniser deux dossiers</p>
+            </div>
+          </div>
+          <button onClick={() => setSyncPanelOpen(false)} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-secondary transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-5">
+
+          {/* Folder paths */}
+          <div className="space-y-3">
+            <div>
+              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                Source
+              </label>
+              <div className="flex gap-2">
+                <input
+                  value={source}
+                  onChange={e => setSource(e.target.value)}
+                  placeholder="C:\Users\…\Dossier"
+                  className="flex-1 h-9 px-3 text-[12px] bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono"
+                />
+                <button onClick={useCurrentAsSource} title="Utiliser le dossier actuel"
+                  className="h-9 px-3 rounded-lg border border-border text-[11px] hover:bg-secondary transition-colors flex-shrink-0 text-muted-foreground hover:text-foreground">
+                  Actuel
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
+                Destination
+              </label>
+              <div className="flex gap-2">
+                <input
+                  value={dest}
+                  onChange={e => setDest(e.target.value)}
+                  placeholder="C:\Users\…\Backup"
+                  className="flex-1 h-9 px-3 text-[12px] bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono"
+                />
+                <button onClick={useCurrentAsDest} title="Utiliser le dossier actuel"
+                  className="h-9 px-3 rounded-lg border border-border text-[11px] hover:bg-secondary transition-colors flex-shrink-0 text-muted-foreground hover:text-foreground">
+                  Actuel
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Mode */}
+          <div>
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">
+              Mode
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: 'one_way', label: 'Unidirectionnel', desc: 'Source → Dest, supprime les extras' },
+                { id: 'two_way', label: 'Bidirectionnel',  desc: 'Fusionne les deux dossiers' },
+              ].map(m => (
+                <button key={m.id} onClick={() => { setMode(m.id); setPreview(null); setResult(null); }}
+                  className={cn(
+                    'p-3 rounded-xl border text-left transition-all',
+                    mode === m.id ? 'border-primary bg-primary/8' : 'border-border hover:border-primary/40'
+                  )}>
+                  <div className={cn('text-[12px] font-semibold mb-0.5', mode === m.id && 'text-primary')}>{m.label}</div>
+                  <div className="text-[10px] text-muted-foreground leading-tight">{m.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Analyse button */}
+          <button
+            onClick={handlePreview}
+            disabled={analyzing || !source.trim() || !dest.trim()}
+            className="w-full h-10 rounded-xl border border-primary text-primary font-semibold text-[13px] disabled:opacity-40 hover:bg-primary/8 transition-colors flex items-center justify-center gap-2"
+          >
+            {analyzing ? <><RefreshCw size={14} className="animate-spin" /> Analyse en cours…</> : <><Search size={14} /> Analyser les différences</>}
+          </button>
+
+          {/* Summary chips */}
+          {counts && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(counts).filter(([, n]) => n > 0).map(([kind, n]) => (
+                <span key={kind} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border"
+                  style={{ color: SYNC_KIND_META[kind]?.color, borderColor: SYNC_KIND_META[kind]?.color + '44', background: SYNC_KIND_META[kind]?.color + '15' }}>
+                  <span>{SYNC_KIND_META[kind]?.icon}</span> {n} {SYNC_KIND_META[kind]?.label}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* File list preview */}
+          {displayList && displayList.length > 0 && (
+            <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin">
+              {displayList.filter(a => a.kind !== 'skip').map((action, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary/40 text-[12px]">
+                  <span className="font-bold text-[13px] flex-shrink-0 w-4 text-center"
+                    style={{ color: SYNC_KIND_META[action.kind]?.color }}>
+                    {SYNC_KIND_META[action.kind]?.icon}
+                  </span>
+                  <span className="flex-1 truncate font-mono text-[11px]">{action.rel_path}</span>
+                  <span className="text-muted-foreground flex-shrink-0">{formatFileSize(action.size)}</span>
+                </div>
+              ))}
+              {displayList.filter(a => a.kind === 'skip').length > 0 && (
+                <p className="text-[11px] text-muted-foreground/60 text-center py-1">
+                  + {displayList.filter(a => a.kind === 'skip').length} fichier(s) déjà à jour
+                </p>
+              )}
+            </div>
+          )}
+
+          {displayList && displayList.length === 0 && (
+            <div className="flex flex-col items-center py-6 text-muted-foreground">
+              <CheckCircle2 size={32} strokeWidth={1} className="mb-2 text-green-500" />
+              <p className="text-[13px]">Les dossiers sont identiques</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer — Sync button */}
+        <div className="flex-shrink-0 p-5 border-t border-border">
+          {result ? (
+            <button
+              onClick={() => { setResult(null); setPreview(null); }}
+              className="w-full h-10 rounded-xl border border-border text-[13px] hover:bg-secondary transition-colors"
+            >
+              Nouvelle synchronisation
+            </button>
+          ) : (
+            <button
+              onClick={handleSync}
+              disabled={syncing || !preview || totalChanges === 0}
+              className="w-full h-10 rounded-xl bg-primary text-primary-foreground font-semibold text-[13px] disabled:opacity-40 hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+            >
+              {syncing
+                ? <><RefreshCw size={14} className="animate-spin" /> Synchronisation…</>
+                : preview && totalChanges > 0
+                  ? <><RefreshCw size={14} /> Synchroniser ({totalChanges} changement{totalChanges > 1 ? 's' : ''})</>
+                  : <><RefreshCw size={14} /> Synchroniser</>
+              }
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ============ TREE VIEW PANEL ============
 
 const TreeViewPanel = () => {
@@ -3839,6 +4082,7 @@ const FileManagerApp = () => {
       <SettingsPanel />
       <DiskAnalysis />
       <TreeViewPanel />
+      <SyncPanel />
       <AiPanel />
       <Toaster position="bottom-right" richColors />
     </div>
