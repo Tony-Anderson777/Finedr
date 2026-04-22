@@ -48,6 +48,18 @@
 }
 
 /* ============================================================
+   LIQUID GLASS ICONS — visibility on light/dark backgrounds
+   ============================================================ */
+
+.liquid-icon {
+  filter: var(--icon-tint-filter) drop-shadow(0 1px 4px rgba(0, 0, 0, 0.22)) drop-shadow(0 0 1px rgba(0, 0, 0, 0.15));
+}
+
+.dark .liquid-icon {
+  filter: var(--icon-tint-filter) drop-shadow(0 1px 6px rgba(0, 0, 0, 0.5));
+}
+
+/* ============================================================
    ROOT BACKGROUND — visible through glass elements
    ============================================================ */
 

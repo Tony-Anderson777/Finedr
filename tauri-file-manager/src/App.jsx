@@ -17,7 +17,7 @@ import {
   Home, Copy, Scissors, Clipboard, Edit3, Info, Archive, FolderOpen, Cloud,
   Sparkles, Bot, Eye, EyeOff, Send, AlertCircle, CheckCircle2, Loader2,
   ShieldCheck, ShieldAlert, ShieldX, ZoomIn, BarChart2, HardDriveDownload,
-  PackagePlus, PackageOpen
+  PackagePlus, PackageOpen, GitBranch, Trash, AlertTriangle, Clock, HardDrive as HardDriveIcon
 } from 'lucide-react';
 
 // ============ UTILITY FUNCTIONS ============
@@ -47,26 +47,20 @@ const formatDate = (dateString) => {
 };
 
 const getFileIcon = (type, extension, size = 20) => {
-  const props = { size, strokeWidth: 1.5 };
-  
+  const style = { width: size, height: size, objectFit: 'contain', flexShrink: 0 };
   switch (type) {
     case 'folder':
-      return <Folder {...props} className="text-[#34C759]" fill="#34C759" fillOpacity={0.2} />;
+      return <img src="/icons/folder.png" style={style} className="liquid-icon" alt="folder" />;
     case 'image':
-      return <FileImage {...props} className="text-[#FF9500]" />;
+      return <img src="/icons/picture.svg" style={style} className="liquid-icon" alt="image" />;
     case 'document':
-      if (extension === 'pdf') return <FileText {...props} className="text-[#FF3B30]" />;
-      return <FileText {...props} className="text-[#007AFF]" />;
+      return <img src="/icons/document.png" style={style} className="liquid-icon" alt="document" />;
     case 'video':
-      return <FileVideo {...props} className="text-[#AF52DE]" />;
     case 'audio':
-      return <FileAudio {...props} className="text-[#FF2D55]" />;
     case 'archive':
-      return <FileArchive {...props} className="text-[#8E8E93]" />;
     case 'code':
-      return <FileCode {...props} className="text-[#32ADE6]" />;
     default:
-      return <File {...props} className="text-[#8E8E93]" />;
+      return <img src="/icons/file.svg" style={style} className="liquid-icon" alt="file" />;
   }
 };
 
@@ -138,6 +132,9 @@ const ThemeProvider = ({ children }) => {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system');
   const [visualStyle, setVisualStyle] = useState(() => localStorage.getItem('visualStyle') || 'default');
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#007AFF');
+  const [iconTint, setIconTintState] = useState(() => localStorage.getItem('iconTint') || 'default');
+  const [treeViewOpen, setTreeViewOpen] = useState(false);
+  const [treeViewPath, setTreeViewPath] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showFileSizes, setShowFileSizes] = useState(() => localStorage.getItem('showFileSizes') !== 'false');
   const [aiPanelOpen, setAiPanelOpen]           = useState(false);
@@ -174,6 +171,28 @@ const ThemeProvider = ({ children }) => {
     localStorage.setItem('accentColor', accentColor);
   }, [accentColor]);
 
+  const ICON_TINTS = [
+    { value: 'default', label: 'Blanc',  hex: '#ffffff', filter: '' },
+    { value: 'blue',    label: 'Bleu',   hex: '#007AFF', filter: 'brightness(0) invert(1) sepia(1) saturate(5) hue-rotate(181deg)' },
+    { value: 'green',   label: 'Vert',   hex: '#34C759', filter: 'brightness(0) invert(1) sepia(1) saturate(5) hue-rotate(104deg)' },
+    { value: 'orange',  label: 'Orange', hex: '#FF9500', filter: 'brightness(0) invert(1) sepia(1) saturate(5) hue-rotate(5deg)' },
+    { value: 'purple',  label: 'Violet', hex: '#AF52DE', filter: 'brightness(0) invert(1) sepia(1) saturate(4) hue-rotate(252deg)' },
+    { value: 'pink',    label: 'Rose',   hex: '#FF2D55', filter: 'brightness(0) invert(1) sepia(1) saturate(5) hue-rotate(317deg)' },
+    { value: 'cyan',    label: 'Cyan',   hex: '#5AC8FA', filter: 'brightness(0) invert(1) sepia(1) saturate(4) hue-rotate(151deg)' },
+  ];
+
+  const setIconTint = (value) => {
+    setIconTintState(value);
+    localStorage.setItem('iconTint', value);
+    const tint = ICON_TINTS.find(t => t.value === value);
+    document.documentElement.style.setProperty('--icon-tint-filter', tint?.filter || '');
+  };
+
+  useEffect(() => {
+    const tint = ICON_TINTS.find(t => t.value === iconTint);
+    document.documentElement.style.setProperty('--icon-tint-filter', tint?.filter || '');
+  }, [iconTint]);
+
   useEffect(() => { localStorage.setItem('showFileSizes', showFileSizes); }, [showFileSizes]);
   useEffect(() => { localStorage.setItem('aiProvider',   aiProvider);   }, [aiProvider]);
   useEffect(() => { localStorage.setItem('claudeKey',    claudeKey);    }, [claudeKey]);
@@ -184,6 +203,8 @@ const ThemeProvider = ({ children }) => {
       theme, setTheme,
       visualStyle, setVisualStyle,
       accentColor, setAccentColor,
+      iconTint, setIconTint, ICON_TINTS,
+      treeViewOpen, setTreeViewOpen, treeViewPath, setTreeViewPath,
       settingsOpen, setSettingsOpen,
       showFileSizes, setShowFileSizes,
       aiPanelOpen, setAiPanelOpen,
@@ -617,13 +638,16 @@ const SidebarSection = ({ title, children, defaultOpen = true, action }) => {
 
 // ============ SIDEBAR ITEM ============
 
-const SidebarItem = ({ icon: Icon, label, active, onClick, badge, onRemove }) => (
+const SidebarItem = ({ icon: Icon, imgSrc, label, active, onClick, badge, onRemove }) => (
   <div className="group relative flex items-center">
     <button
       onClick={onClick}
       className={cn('sidebar-item flex-1 min-w-0', active && 'sidebar-item-active', onRemove && 'pr-7')}
     >
-      {Icon && <Icon size={16} strokeWidth={1.5} className={active ? 'text-primary' : 'text-muted-foreground'} />}
+      {imgSrc
+        ? <img src={imgSrc} style={{ width: 18, height: 18, objectFit: 'contain', flexShrink: 0, opacity: active ? 1 : 0.7 }} className="liquid-icon" alt="" />
+        : Icon && <Icon size={16} strokeWidth={1.5} className={active ? 'text-primary' : 'text-muted-foreground'} />
+      }
       <span className="flex-1 truncate">{label}</span>
       {badge !== undefined && (
         <span className="text-[11px] text-muted-foreground">{badge}</span>
@@ -658,7 +682,7 @@ const Sidebar = () => {
             {userDirs.map((dir) => (
               <SidebarItem
                 key={dir.path}
-                icon={Folder}
+                imgSrc="/icons/folder.png"
                 label={dir.name}
                 active={currentPath === dir.path}
                 onClick={() => navigateToFolder(dir.path)}
@@ -688,7 +712,7 @@ const Sidebar = () => {
             pinnedFolders.map((dir) => (
               <SidebarItem
                 key={dir.path}
-                icon={Star}
+                imgSrc="/icons/bookmark.svg"
                 label={dir.name}
                 active={currentPath === dir.path}
                 onClick={() => navigateToFolder(dir.path)}
@@ -724,7 +748,7 @@ const Sidebar = () => {
               {recentFolders.slice(0, 10).map(dir => (
                 <SidebarItem
                   key={dir.path}
-                  icon={FolderOpen}
+                  imgSrc="/icons/folder-open.png"
                   label={dir.name}
                   active={currentPath === dir.path}
                   onClick={() => navigateToFolder(dir.path)}
@@ -908,7 +932,7 @@ const TopBar = () => {
       {/* Right controls */}
       <div className="flex items-center gap-2">
         <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <img src="/icons/search.svg" style={{ width: 14, height: 14, objectFit: 'contain', position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', opacity: 0.6 }} className="liquid-icon" alt="" />
           <input
             type="text"
             placeholder="Rechercher..."
@@ -988,7 +1012,7 @@ const TopBar = () => {
           title="Préférences"
           onClick={() => setSettingsOpen(true)}
         >
-          <Settings size={14} strokeWidth={1.5} />
+          <img src="/icons/settings.png" style={{ width: 16, height: 16, objectFit: 'contain' }} className="liquid-icon" alt="" />
         </button>
       </div>
     </header>
@@ -999,7 +1023,7 @@ const TopBar = () => {
 
 const FileItemIcon = ({ file }) => {
   const { selectedFiles, setSelectedFiles, openItem, copyFiles, cutFiles, deleteFile, renameFile, iconSize, currentPath, refresh } = useFileManager();
-  const { showFileSizes } = useTheme();
+  const { showFileSizes, setTreeViewOpen, setTreeViewPath } = useTheme();
 
   const handleZip = async () => {
     setShowContextMenu(false);
@@ -1135,6 +1159,14 @@ const FileItemIcon = ({ file }) => {
             >
               <PackagePlus size={14} /> Compresser en ZIP
             </button>
+            {file.file_type === 'folder' && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2"
+                onClick={() => { setTreeViewPath(file.path); setTreeViewOpen(true); setShowContextMenu(false); }}
+              >
+                <GitBranch size={14} /> Vue arbre
+              </button>
+            )}
             {file.extension === 'zip' && (
               <button
                 className="w-full px-3 py-1.5 text-left text-[13px] hover:bg-secondary/50 rounded flex items-center gap-2"
@@ -1902,6 +1934,7 @@ const SettingsPanel = () => {
     theme, setTheme,
     visualStyle, setVisualStyle,
     accentColor, setAccentColor,
+    iconTint, setIconTint, ICON_TINTS,
     settingsOpen, setSettingsOpen,
     showFileSizes, setShowFileSizes,
     aiProvider, setAiProvider,
@@ -2030,6 +2063,36 @@ const SettingsPanel = () => {
                   )}
                   style={{ backgroundColor: c.hex }}
                 />
+              ))}
+            </div>
+          </section>
+
+          {/* Couleur des icônes */}
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">Couleur des icônes</h3>
+            <div className="flex flex-wrap gap-2.5">
+              {ICON_TINTS.map(t => (
+                <button
+                  key={t.value}
+                  onClick={() => setIconTint(t.value)}
+                  title={t.label}
+                  className={cn(
+                    'w-8 h-8 rounded-full transition-all hover:scale-110 border-2 flex items-center justify-center',
+                    iconTint === t.value
+                      ? 'border-primary scale-110 shadow-lg'
+                      : 'border-border'
+                  )}
+                  style={{ backgroundColor: t.value === 'default' ? '#444' : t.hex }}
+                >
+                  <img
+                    src="/icons/folder.png"
+                    style={{
+                      width: 18, height: 18, objectFit: 'contain',
+                      filter: t.filter ? t.filter + ' drop-shadow(0 1px 2px rgba(0,0,0,0.3))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))'
+                    }}
+                    alt=""
+                  />
+                </button>
               ))}
             </div>
           </section>
@@ -2434,6 +2497,17 @@ const DiskAnalysis = () => {
             <div className="flex flex-col items-center justify-center h-40 text-muted-foreground gap-2">
               <BarChart2 size={28} strokeWidth={1} className="opacity-40" />
               <p className="text-[12px]">Ouvre un dossier pour l'analyser</p>
+            </div>
+          )}
+
+          {/* Analyse intelligente */}
+          {!loading && analyzed && (
+            <div className="pt-2 border-t border-border space-y-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={13} className="text-[#FF9500]" />
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Nettoyage intelligent</p>
+              </div>
+              <SmartCleanupPanel />
             </div>
           )}
         </div>
@@ -2847,6 +2921,303 @@ const AiPanel = () => {
   );
 };
 
+// ============ TREE VIEW PANEL ============
+
+const TreeViewPanel = () => {
+  const { treeViewOpen, setTreeViewOpen, treeViewPath } = useTheme();
+  const { navigateToFolder } = useFileManager();
+  const [tree, setTree] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(new Set());
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    if (!treeViewOpen || !treeViewPath) return;
+    setLoading(true); setTree(null); setExpanded(new Set()); setSearch('');
+    invoke('get_folder_tree', { path: treeViewPath, maxDepth: 4 })
+      .then(t => { setTree(t); setExpanded(new Set([treeViewPath])); })
+      .catch(e => toast.error(String(e)))
+      .finally(() => setLoading(false));
+  }, [treeViewOpen, treeViewPath]);
+
+  if (!treeViewOpen) return null;
+
+  const fmt = (b) => {
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' Go';
+    if (b >= 1048576)    return (b / 1048576).toFixed(1)    + ' Mo';
+    if (b >= 1024)       return (b / 1024).toFixed(0)       + ' Ko';
+    return b + ' o';
+  };
+
+  const toggle = (p) => setExpanded(prev => {
+    const n = new Set(prev);
+    n.has(p) ? n.delete(p) : n.add(p);
+    return n;
+  });
+
+  const matchesSearch = (node) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    if (node.name.toLowerCase().includes(q)) return true;
+    if (node.children) return node.children.some(c => matchesSearch(c));
+    return false;
+  };
+
+  const renderNode = (node, depth = 0) => {
+    if (search && !matchesSearch(node)) return null;
+    const isExpanded = expanded.has(node.path);
+    const hasChildren = node.is_folder && node.children.length > 0;
+    const highlight = search && node.name.toLowerCase().includes(search.toLowerCase());
+
+    return (
+      <div key={node.path}>
+        <div
+          className={cn(
+            'group flex items-center gap-1.5 py-[3px] px-2 rounded-md cursor-pointer transition-colors',
+            'hover:bg-white/8',
+            highlight && 'bg-primary/10'
+          )}
+          style={{ paddingLeft: depth * 14 + 8 }}
+          onClick={() => node.is_folder ? toggle(node.path) : null}
+        >
+          {node.is_folder ? (
+            <ChevronRight
+              size={11}
+              className={cn('text-muted-foreground/60 transition-transform flex-shrink-0', isExpanded && 'rotate-90')}
+            />
+          ) : (
+            <span className="w-[11px] flex-shrink-0" />
+          )}
+          <img
+            src={node.is_folder ? (isExpanded ? '/icons/folder-open.png' : '/icons/folder.png') : '/icons/file.svg'}
+            className="liquid-icon flex-shrink-0"
+            style={{ width: 14, height: 14 }}
+            alt=""
+          />
+          <span className={cn('flex-1 text-[12px] truncate', highlight && 'text-primary font-medium')}>
+            {node.name}
+          </span>
+          {node.is_folder && node.file_count > 0 && (
+            <span className="text-[10px] text-muted-foreground/40 flex-shrink-0 opacity-0 group-hover:opacity-100">
+              {node.file_count} fichiers
+            </span>
+          )}
+          <span className="text-[10px] text-muted-foreground/50 flex-shrink-0 ml-1 opacity-0 group-hover:opacity-100">
+            {node.size > 0 ? fmt(node.size) : ''}
+          </span>
+          {node.is_folder && (
+            <button
+              onClick={(e) => { e.stopPropagation(); navigateToFolder(node.path); setTreeViewOpen(false); }}
+              className="opacity-0 group-hover:opacity-100 text-[10px] text-primary hover:underline flex-shrink-0 ml-1"
+              title="Naviguer vers ce dossier"
+            >
+              Ouvrir
+            </button>
+          )}
+        </div>
+        {node.is_folder && isExpanded && node.children.map(child => renderNode(child, depth + 1))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" onClick={() => setTreeViewOpen(false)}>
+      <div
+        className="settings-panel w-[420px] h-full flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="relative z-10 flex-shrink-0 px-5 pt-5 pb-4 border-b border-white/10 dark:border-white/5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-primary/15 flex items-center justify-center">
+              <GitBranch size={15} className="text-primary" />
+            </div>
+            <div>
+              <p className="text-[13px] font-semibold">Vue arbre</p>
+              <p className="text-[11px] text-muted-foreground truncate max-w-[240px]">
+                {treeViewPath.split(/[/\\]/).pop() || treeViewPath}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setTreeViewOpen(false)}
+            className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="relative z-10 flex-shrink-0 px-4 py-2 border-b border-white/5">
+          <Search size={12} className="absolute left-7 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
+          <input
+            type="text"
+            placeholder="Filtrer..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full pl-8 pr-3 py-1.5 text-[12px] bg-secondary/40 rounded-lg border border-transparent focus:border-primary/30 focus:outline-none"
+          />
+        </div>
+
+        {/* Tree */}
+        <div className="relative z-10 flex-1 overflow-y-auto px-2 py-2 scrollbar-thin">
+          {loading && (
+            <div className="flex flex-col items-center justify-center h-40 gap-3 text-muted-foreground">
+              <Loader2 size={22} className="animate-spin text-primary" />
+              <p className="text-[12px]">Analyse en cours…</p>
+            </div>
+          )}
+          {!loading && tree && renderNode(tree)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============ SMART STORAGE ANALYSIS ============
+
+const SmartCleanupPanel = ({ onClose }) => {
+  const { currentPath } = useFileManager();
+  const [candidates, setCandidates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const { deleteFile } = useFileManager();
+
+  useEffect(() => {
+    if (!currentPath) return;
+    setLoading(true);
+    invoke('get_cleanup_candidates', { path: currentPath })
+      .then(res => { setCandidates(res); setSelected(new Set()); })
+      .catch(e => toast.error(String(e)))
+      .finally(() => setLoading(false));
+  }, [currentPath]);
+
+  const fmt = (b) => {
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' Go';
+    if (b >= 1048576)    return (b / 1048576).toFixed(1)    + ' Mo';
+    if (b >= 1024)       return (b / 1024).toFixed(0)       + ' Ko';
+    return b + ' o';
+  };
+
+  const toggleSelect = (path) => setSelected(prev => {
+    const n = new Set(prev);
+    n.has(path) ? n.delete(path) : n.add(path);
+    return n;
+  });
+
+  const selectAll = () => setSelected(new Set(candidates.map(c => c.path)));
+  const selectNone = () => setSelected(new Set());
+
+  const handleDelete = async () => {
+    if (selected.size === 0) return;
+    setDeleting(true);
+    let ok = 0, fail = 0;
+    for (const path of selected) {
+      try { await invoke('delete_file', { path, permanent: false }); ok++; }
+      catch { fail++; }
+    }
+    toast.success(`${ok} élément(s) supprimé(s)${fail > 0 ? `, ${fail} échec(s)` : ''}`);
+    setCandidates(prev => prev.filter(c => !selected.has(c.path)));
+    setSelected(new Set());
+    setDeleting(false);
+  };
+
+  const totalSelected = candidates
+    .filter(c => selected.has(c.path))
+    .reduce((s, c) => s + c.size, 0);
+
+  const CATEGORY_INFO = {
+    temp:  { label: 'Temporaire', color: '#FF9500', Icon: Clock },
+    large: { label: 'Volumineux',  color: '#FF3B30', Icon: HardDriveIcon },
+    old:   { label: 'Ancien',      color: '#8E8E93', Icon: Clock },
+    empty: { label: 'Vide',        color: '#34C759', Icon: AlertTriangle },
+  };
+
+  return (
+    <div className="space-y-4">
+      {loading && (
+        <div className="flex items-center justify-center h-24 gap-3 text-muted-foreground">
+          <Loader2 size={18} className="animate-spin text-primary" />
+          <p className="text-[12px]">Analyse intelligente…</p>
+        </div>
+      )}
+
+      {!loading && candidates.length === 0 && (
+        <div className="flex flex-col items-center justify-center h-24 gap-2 text-muted-foreground">
+          <CheckCircle2 size={22} className="text-[#34C759]" />
+          <p className="text-[12px]">Aucun fichier inutile détecté</p>
+        </div>
+      )}
+
+      {!loading && candidates.length > 0 && (
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] text-muted-foreground">
+              {candidates.length} éléments détectés
+            </p>
+            <div className="flex gap-2">
+              <button onClick={selectAll} className="text-[11px] text-primary hover:underline">Tout</button>
+              <button onClick={selectNone} className="text-[11px] text-muted-foreground hover:underline">Aucun</button>
+            </div>
+          </div>
+
+          <div className="space-y-1 max-h-[300px] overflow-y-auto scrollbar-thin pr-1">
+            {candidates.map(c => {
+              const info = CATEGORY_INFO[c.category] || CATEGORY_INFO.temp;
+              const CatIcon = info.Icon;
+              const isSel = selected.has(c.path);
+              return (
+                <div
+                  key={c.path}
+                  onClick={() => toggleSelect(c.path)}
+                  className={cn(
+                    'flex items-center gap-2.5 p-2 rounded-lg cursor-pointer transition-colors border',
+                    isSel
+                      ? 'bg-destructive/10 border-destructive/30'
+                      : 'bg-secondary/30 border-transparent hover:bg-secondary/60'
+                  )}
+                >
+                  <div className={cn(
+                    'w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-all',
+                    isSel ? 'bg-destructive border-destructive' : 'border-border'
+                  )}>
+                    {isSel && <X size={10} className="text-white" />}
+                  </div>
+                  <CatIcon size={13} style={{ color: info.color }} className="flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] truncate font-medium">{c.name}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{c.reason}</p>
+                  </div>
+                  <span className="text-[11px] text-muted-foreground flex-shrink-0">
+                    {c.size > 0 ? fmt(c.size) : '—'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {selected.size > 0 && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="text-muted-foreground">{selected.size} sélectionné(s)</span>
+                <span className="font-semibold text-destructive">{totalSelected > 0 ? '−' + fmt(totalSelected) : ''}</span>
+              </div>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="w-full py-2 rounded-lg bg-destructive text-white text-[13px] font-medium hover:bg-destructive/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash size={14} />}
+                Supprimer {selected.size} élément(s)
+              </button>
+              <p className="text-[10px] text-muted-foreground text-center">Les fichiers seront envoyés à la corbeille</p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
 // ============ MAIN APP ============
 
 const FileManagerApp = () => {
@@ -2868,6 +3239,7 @@ const FileManagerApp = () => {
       <QuickLook />
       <SettingsPanel />
       <DiskAnalysis />
+      <TreeViewPanel />
       <AiPanel />
       <Toaster position="bottom-right" richColors />
     </div>

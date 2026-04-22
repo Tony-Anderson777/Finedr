@@ -27,6 +27,12 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "shell:allow-open",
-    "os:default"
+    "os:default",
+    "core:tray:default",
+    "core:tray:allow-get-by-id",
+    "core:tray:allow-set-icon",
+    "core:image:default",
+    "core:image:allow-from-bytes",
+    "core:image:allow-new"
   ]
 }

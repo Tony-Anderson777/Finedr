@@ -647,6 +647,165 @@ async fn extract_zip(zip_path: String, dest_dir: String) -> Result<String, Strin
     Ok(format!("{} fichier(s) extrait(s) dans {}", archive.len(), dest_dir))
 }
 
+// ── Tree view ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TreeNode {
+    pub name: String,
+    pub path: String,
+    pub is_folder: bool,
+    pub size: u64,
+    pub extension: Option<String>,
+    pub file_count: u64,
+    pub children: Vec<TreeNode>,
+}
+
+fn build_tree_node(path: &Path, current_depth: u32, max_depth: u32) -> TreeNode {
+    let name = path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let path_str = path.to_string_lossy().to_string();
+
+    if !path.is_dir() {
+        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let extension = path.extension().map(|e| e.to_string_lossy().to_string());
+        return TreeNode { name, path: path_str, is_folder: false, size, extension, file_count: 1, children: vec![] };
+    }
+
+    if current_depth >= max_depth {
+        let size = recursive_dir_size(path);
+        let file_count = walkdir::WalkDir::new(path).max_depth(8).into_iter()
+            .filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()).count() as u64;
+        return TreeNode { name, path: path_str, is_folder: true, size, extension: None, file_count, children: vec![] };
+    }
+
+    let mut children: Vec<TreeNode> = vec![];
+    let mut total_size = 0u64;
+    let mut total_files = 0u64;
+
+    if let Ok(entries) = fs::read_dir(path) {
+        let mut entries_vec: Vec<std::fs::DirEntry> = entries.flatten()
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .collect();
+        entries_vec.sort_by(|a, b| {
+            let a_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let b_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if a_dir != b_dir { b_dir.cmp(&a_dir) } else { a.file_name().cmp(&b.file_name()) }
+        });
+        for entry in entries_vec.iter().take(200) {
+            let child = build_tree_node(&entry.path(), current_depth + 1, max_depth);
+            total_size += child.size;
+            total_files += child.file_count;
+            children.push(child);
+        }
+    }
+
+    TreeNode { name, path: path_str, is_folder: true, size: total_size, extension: None, file_count: total_files, children }
+}
+
+#[tauri::command]
+async fn get_folder_tree(path: String, max_depth: Option<u32>) -> Result<TreeNode, String> {
+    let root = PathBuf::from(&path);
+    if !root.exists() { return Err(format!("Chemin invalide : {}", path)); }
+    Ok(build_tree_node(&root, 0, max_depth.unwrap_or(4)))
+}
+
+// ── Cleanup analysis ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CleanupCandidate {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub reason: String,
+    pub category: String,
+}
+
+fn fmt_bytes(b: u64) -> String {
+    if b >= 1_073_741_824 { format!("{:.1} Go", b as f64 / 1_073_741_824.0) }
+    else if b >= 1_048_576 { format!("{:.1} Mo", b as f64 / 1_048_576.0) }
+    else if b >= 1024 { format!("{} Ko", b / 1024) }
+    else { format!("{} o", b) }
+}
+
+#[tauri::command]
+async fn get_cleanup_candidates(path: String) -> Result<Vec<CleanupCandidate>, String> {
+    use std::time::{SystemTime, Duration};
+    let root = PathBuf::from(&path);
+    if !root.is_dir() { return Err(format!("Chemin invalide : {}", path)); }
+
+    let mut candidates: Vec<CleanupCandidate> = vec![];
+    let one_year_ago = SystemTime::now()
+        .checked_sub(Duration::from_secs(365 * 24 * 3600))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    let temp_exts = ["tmp", "temp", "log", "bak", "old", "dmp", "crdownload", "part"];
+    let temp_names = ["thumbs.db", "desktop.ini", "$recycle.bin", "pagefile.sys",
+                      "hiberfil.sys", ".ds_store", "ehthumbs.db", "ehthumbs_vista.db"];
+
+    for entry in walkdir::WalkDir::new(&root).max_depth(6).into_iter().filter_map(|e| e.ok()) {
+        let ep = entry.path();
+        let name_lower = entry.file_name().to_string_lossy().to_lowercase();
+        let name_orig  = entry.file_name().to_string_lossy().to_string();
+        let path_str   = ep.to_string_lossy().to_string();
+        let Ok(meta)   = entry.metadata() else { continue; };
+
+        if meta.is_file() {
+            let size = meta.len();
+            let ext  = ep.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+            // Fichiers temporaires
+            if temp_exts.contains(&ext.as_str())
+                || temp_names.contains(&name_lower.as_str())
+                || name_lower.starts_with("~$")
+            {
+                candidates.push(CleanupCandidate {
+                    path: path_str, name: name_orig, size,
+                    reason: "Fichier temporaire ou système".to_string(),
+                    category: "temp".to_string(),
+                });
+                continue;
+            }
+
+            // Fichiers volumineux (>200 Mo)
+            if size > 200 * 1024 * 1024 {
+                candidates.push(CleanupCandidate {
+                    path: path_str.clone(), name: name_orig.clone(), size,
+                    reason: format!("Fichier volumineux ({})", fmt_bytes(size)),
+                    category: "large".to_string(),
+                });
+            }
+
+            // Fichiers anciens non modifiés (>1 an, >10 Mo)
+            if size > 10 * 1024 * 1024 {
+                if let Ok(modified) = meta.modified() {
+                    if modified < one_year_ago && !candidates.iter().any(|c| c.path == path_str) {
+                        candidates.push(CleanupCandidate {
+                            path: path_str, name: name_orig, size,
+                            reason: "Non modifié depuis plus d'un an".to_string(),
+                            category: "old".to_string(),
+                        });
+                    }
+                }
+            }
+        } else if meta.is_dir() && ep != root {
+            // Dossiers vides
+            let is_empty = fs::read_dir(ep).map(|mut d| d.next().is_none()).unwrap_or(false);
+            if is_empty {
+                candidates.push(CleanupCandidate {
+                    path: path_str, name: name_orig, size: 0,
+                    reason: "Dossier vide".to_string(),
+                    category: "empty".to_string(),
+                });
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.size.cmp(&a.size));
+    candidates.truncate(100);
+    Ok(candidates)
+}
+
 // ── Disk analysis ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1262,6 +1421,13 @@ async fn ai_analyze(request: AiAnalysisRequest) -> Result<String, String> {
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            let icon = app.default_window_icon().unwrap().clone();
+            tauri::tray::TrayIconBuilder::with_id("main-tray")
+                .icon(icon)
+                .build(app)?;
+            Ok(())
+        })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -1281,6 +1447,8 @@ fn main() {
             get_disk_spaces,
             analyze_directory_categories,
             get_subdirectory_sizes,
+            get_folder_tree,
+            get_cleanup_candidates,
             zip_items,
             extract_zip,
             open_file_with_default_app,
